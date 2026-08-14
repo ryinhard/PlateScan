@@ -1,0 +1,20 @@
+# 環境變數／機密設定
+.env
+.env.*
+!.env.example
+
+# Google Service Account 憑證（禁止提交）
+credentials/*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# 編輯器／作業系統雜項
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
