@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>每日營養儀表板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
+  background: #f0f2f5; color: #1a1a2e; padding: 8px; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; }
+
+/* Header */
+.header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px; padding: 4px 0;
+}
+.header h1 { font-size: 20px; font-weight: 700; }
+.header-actions { display: flex; gap: 6px; }
+.btn {
+  padding: 6px 12px; border: none; border-radius: 8px; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all .15s; touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-outline {
+  background: #fff; border: 1px solid #d0d5dd; color: #344054;
+}
+.btn-outline:hover, .btn-outline:active { background: #f2f4f7; }
+.btn-primary { background: #1a1a2e; color: #fff; }
+.btn-primary:hover, .btn-primary:active { background: #16213e; }
+.btn-success { background: #12b76a; color: #fff; }
+.btn-success:hover, .btn-success:active { background: #0e9f56; }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
+.btn-icon {
+  width: 36px; height: 36px; padding: 0; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 8px;
+}
+
+/* Navigation */
+.nav-bar {
+  background: #fff; border-radius: 12px; padding: 8px 12px;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06); flex-wrap: wrap;
+}
+.nav-date { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 200px; }
+.nav-date .date-label { font-size: 16px; font-weight: 600; min-width: 140px; text-align: center; }
+.nav-date .week-label { font-size: 13px; color: #667085; text-align: center; min-width: 160px; }
+.nav-views { display: flex; gap: 4px; }
+.nav-views button {
+  padding: 5px 12px; border: 1px solid #d0d5dd; background: #fff;
+  border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: #667085;
+  transition: all .15s; touch-action: manipulation;
+}
+.nav-views button.active { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+.nav-views button:hover:not(.active) { background: #f2f4f7; }
+
+/* Data Source Bar */
+.data-bar {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  font-size: 13px; color: #667085; margin-bottom: 8px; padding: 6px 10px;
+  background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.data-bar .status {
+  display: flex; align-items: center; gap: 4px; flex: 1; min-width: 120px;
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+}
+.status-dot.loaded { background: #12b76a; }
+.status-dot.empty { background: #f04438; }
+.status-dot.loading { background: #f79009; animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.data-bar input[type="file"] { display: none; }
+
+/* Summary Cards */
+.summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin-bottom: 8px;
+}
+.card {
+  background: #fff; border-radius: 10px; padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06); min-width: 0;
+}
+.card .label { font-size: 11px; color: #667085; font-weight: 500; margin-bottom: 2px; }
+.card .value { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .sub { font-size: 11px; color: #667085; margin-top: 1px; }
+.card .bar-wrap {
+  margin-top: 6px; height: 5px; background: #f0f2f5; border-radius: 3px; overflow: hidden;
+}
+.card .bar-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
+.card.status-good .bar-fill { background: #12b76a; }
+.card.status-warn .bar-fill { background: #f79009; }
+.card.status-bad .bar-fill { background: #f04438; }
+.card.status-good .value { color: #12b76a; }
+.card.status-warn .value { color: #f79009; }
+.card.status-bad .value { color: #f04438; }
+
+/* Chart Area */
+.chart-wrap {
+  background: #fff; border-radius: 12px; padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 8px;
+  position: relative;
+}
+.chart-wrap canvas { max-height: 320px; width: 100% !important; }
+.empty-state {
+  text-align: center; padding: 40px 16px; color: #667085;
+}
+.empty-state .icon { font-size: 48px; margin-bottom: 8px; }
+
+/* Food Table */
+.food-section {
+  background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  overflow: hidden; margin-bottom: 8px;
+}
+.food-section .section-title {
+  padding: 12px 14px 0; font-size: 14px; font-weight: 600;
+}
+.food-table { width: 100%; border-collapse: collapse; }
+.food-table th {
+  text-align: left; padding: 8px 10px; font-size: 11px; color: #667085;
+  font-weight: 500; border-bottom: 1px solid #f0f2f5; white-space: nowrap;
+}
+.food-table td {
+  padding: 7px 10px; font-size: 13px; border-bottom: 1px solid #f0f2f5;
+}
+.food-table tr:last-child td { border-bottom: none; }
+.food-table .total-row { background: #f8f9fc; font-weight: 600; }
+.food-table .total-row td { border-top: 2px solid #e0e3eb; }
+.food-name { word-break: break-word; }
+.food-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4);
+  z-index: 1000; justify-content: center; align-items: center;
+  padding: 16px;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: #fff; border-radius: 16px; padding: 20px; width: 480px;
+  max-width: 100%; max-height: 85vh; overflow-y: auto;
+}
+.modal h2 { font-size: 17px; margin-bottom: 14px; }
+.modal .form-group { margin-bottom: 12px; }
+.modal label { display: block; font-size: 13px; font-weight: 500; color: #344054; margin-bottom: 4px; }
+.modal input[type="number"], .modal input[type="text"] {
+  width: 100%; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 8px;
+  font-size: 14px;
+}
+.modal input:focus { outline: none; border-color: #1a1a2e; box-shadow: 0 0 0 2px rgba(26,26,46,.1); }
+.modal .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.modal .form-full { grid-column: 1 / -1; }
+.modal .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+.modal .close-btn {
+  float: right; background: none; border: none; font-size: 24px; cursor: pointer;
+  color: #667085; line-height: 1; padding: 0 4px;
+}
+.modal .tab-bar {
+  display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid #f0f2f5;
+}
+.modal .tab {
+  padding: 8px 16px; border: none; background: none; cursor: pointer;
+  font-size: 13px; font-weight: 500; color: #667085; border-bottom: 2px solid transparent;
+  transition: all .15s;
+}
+.modal .tab.active { color: #1a1a2e; border-bottom-color: #1a1a2e; }
+.modal .tab-pane { display: none; }
+.modal .tab-pane.active { display: block; }
+.modal .help-text { font-size: 12px; color: #98a2b3; margin-top: 4px; line-height: 1.5; }
+
+/* Loading overlay */
+.loading-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(255,255,255,.8);
+  z-index: 999; justify-content: center; align-items: center;
+}
+.loading-overlay.open { display: flex; }
+.spinner {
+  width: 36px; height: 36px; border: 3px solid #f0f2f5; border-top-color: #1a1a2e;
+  border-radius: 50%; animation: spin .8s linear infinite;
+}
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #1a1a2e; color: #fff; padding: 10px 20px; border-radius: 10px;
+  font-size: 13px; z-index: 2000; opacity: 0; transition: opacity .3s;
+  pointer-events: none; white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+
+/* Responsive */
+@media (max-width: 600px) {
+  body { padding: 4px; }
+  .header h1 { font-size: 17px; }
+  .header-actions .btn { font-size: 12px; padding: 5px 10px; }
+  .summary { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .card { padding: 10px; }
+  .card .value { font-size: 16px; }
+  .nav-bar { padding: 6px 10px; gap: 6px; }
+  .nav-date { min-width: 0; }
+  .nav-date .date-label { font-size: 14px; min-width: 110px; }
+  .nav-date .week-label { min-width: 0; font-size: 12px; }
+  .chart-wrap { padding: 8px; }
+  .chart-wrap canvas { max-height: 250px; }
+  .food-table th, .food-table td { padding: 5px 6px; font-size: 12px; }
+  .modal { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>🥗 每日營養儀表板</h1>
+    <div class="header-actions">
+      <button class="btn btn-outline btn-sm" onclick="showSettings()">⚙️ 目標</button>
+      <button class="btn btn-outline btn-sm" onclick="showDataImport()">📂 資料</button>
+      <button class="btn btn-outline btn-sm" onclick="refreshData()">🔄 刷新</button>
+    </div>
+  </div>
+
+  <!-- Data Bar -->
+  <div class="data-bar">
+    <span class="status">
+      <span id="statusDot" class="status-dot empty"></span>
+      <span id="statusText">尚未載入資料</span>
+    </span>
+    <label class="btn btn-outline btn-sm" for="csvFile">📄 CSV</label>
+    <input type="file" id="csvFile" accept=".csv" onchange="loadCSV(event)">
+    <button class="btn btn-outline btn-sm" onclick="showDataImport()">🔗 Sheet</button>
+    <button class="btn btn-outline btn-sm" onclick="loadSample()">📋 範例</button>
+    <button class="btn btn-outline btn-sm" onclick="clearCache()" style="color:#f04438">🗑️ 清除快取</button>
+  </div>
+
+  <!-- Navigation -->
+  <div class="nav-bar">
+    <div class="nav-date">
+      <button class="btn btn-icon btn-outline" onclick="navPrev()">◀</button>
+      <span id="dateLabel" class="date-label">--</span>
+      <span id="weekLabel" class="week-label"></span>
+      <button class="btn btn-icon btn-outline" onclick="navNext()">▶</button>
+      <button class="btn btn-outline btn-sm" onclick="navToday()">今天</button>
+    </div>
+    <div class="nav-views">
+      <button id="viewDay" class="active" onclick="setView('day')">日</button>
+      <button id="viewWeek" onclick="setView('week')">週</button>
+      <button id="viewMonth" onclick="setView('month')">月</button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary" id="summaryCards"></div>
+
+  <!-- Chart -->
+  <div class="chart-wrap">
+    <canvas id="mainChart"></canvas>
+    <div id="emptyState" class="empty-state" style="display:none">
+      <div class="icon">📊</div>
+      <p>上傳資料或載入範例來開始分析</p>
+      <p style="font-size:12px;color:#98a2b3;margin-top:4px">格式：date,meal,items,calories,carbs_g,protein_g,fat_g</p>
+    </div>
+  </div>
+
+  <!-- Food Details -->
+  <div class="food-section" id="foodSection">
+    <div class="section-title">🍽️ 餐次明細</div>
+    <table class="food-table">
+      <thead><tr>
+        <th>餐次</th><th>品項</th><th class="num">🔥熱量</th><th class="num">🥩蛋白</th><th class="num">🍚碳水</th><th class="num">🧈脂肪</th>
+      </tr></thead>
+      <tbody id="foodBody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Loading -->
+<div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- ============ Settings Modal ============ -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <button class="close-btn" onclick="closeModal('settingsModal')">&times;</button>
+    <h2>⚙️ 營養目標設定</h2>
+    <div class="form-row">
+      <div class="form-group">
+        <label>🔥 熱量 (kcal) 目標</label>
+        <input type="number" id="targetCalories" value="2000" step="50">
+      </div>
+      <div class="form-group">
+        <label>容忍誤差 ± %</label>
+        <input type="number" id="toleranceCalories" value="10" min="0" max="50">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>🥩 蛋白質 (g) 目標</label>
+        <input type="number" id="targetProtein" value="60" step="5">
+      </div>
+      <div class="form-group">
+        <label>容忍誤差 ± %</label>
+        <input type="number" id="toleranceProtein" value="10" min="0" max="50">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>🍚 碳水化合物 (g) 目標</label>
+        <input type="number" id="targetCarbs" value="250" step="10">
+      </div>
+      <div class="form-group">
+        <label>容忍誤差 ± %</label>
+        <input type="number" id="toleranceCarbs" value="10" min="0" max="50">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>🧈 脂肪 (g) 目標</label>
+        <input type="number" id="targetFat" value="65" step="5">
+      </div>
+      <div class="form-group">
+        <label>容忍誤差 ± %</label>
+        <input type="number" id="toleranceFat" value="10" min="0" max="50">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal('settingsModal')">取消</button>
+      <button class="btn btn-primary" onclick="saveSettings()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Data Import Modal ============ -->
+<div class="modal-overlay" id="dataModal">
+  <div class="modal">
+    <button class="close-btn" onclick="closeModal('dataModal')">&times;</button>
+    <h2>📂 資料匯入</h2>
+    <div class="tab-bar">
+      <button class="tab active" onclick="switchTab(this,'tabUpload')">📄 上傳 CSV</button>
+      <button class="tab" onclick="switchTab(this,'tabSheets')">🔗 Google Sheet</button>
+    </div>
+
+    <!-- Tab: CSV Upload -->
+    <div class="tab-pane active" id="tabUpload">
+      <div class="form-group">
+        <label>選擇 CSV 檔案</label>
+        <input type="file" accept=".csv" onchange="loadCSV(event)">
+      </div>
+      <p class="help-text">CSV 格式：date,meal,items,calories,carbs_g,protein_g,fat_g<br>每列一筆餐次紀錄（品項以頓號分隔），與 Bot 寫入的 daily_log 工作表格式一致</p>
+    </div>
+
+    <!-- Tab: Google Sheet (gviz/tq，免 API Key) -->
+    <div class="tab-pane" id="tabSheets">
+      <div class="form-group">
+        <label>Google Sheet ID</label>
+        <input type="text" id="gsheetId" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms" onchange="saveSheetSettings()">
+        <p class="help-text">從網址取得：docs.google.com/spreadsheets/d/<b>{這裡}</b>/edit<br>Sheet 需已設為「知道連結的人皆可檢視」，且包含 daily_log 工作表（透過 Bot「設定 {Sheet ID}」綁定後，Bot 傳送的「圖表」連結會自動帶入此欄位，無需手動輸入）</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-outline" onclick="testGvizConnection()">🔌 連線測試</button>
+        <button class="btn btn-success" onclick="loadFromGviz()">📥 載入資料</button>
+      </div>
+      <p id="sheetStatus" class="help-text" style="margin-top:8px"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== State ====================
+const state = {
+  data: {},
+  dates: [],
+  view: 'day',
+  cursor: new Date(),
+  chart: null,
+  targets: {
+    calories:  { target: 2000, tolerance: 10 },
+    protein:   { target: 60,   tolerance: 10 },
+    carbs:     { target: 250,  tolerance: 10 },
+    fat:       { target: 65,   tolerance: 10 },
+  },
+  sheetConfig: { id: '' },
+};
+
+const NUTRIENTS = [
+  { key: 'calories', label: '🔥 熱量', unit: 'kcal', color: '#e74c3c' },
+  { key: 'protein',  label: '🥩 蛋白質', unit: 'g', color: '#3498db' },
+  { key: 'carbs',    label: '🍚 碳水', unit: 'g', color: '#f39c12' },
+  { key: 'fat',      label: '🧈 脂肪', unit: 'g', color: '#9b59b6' },
+];
+
+const GVIZ_SHEET_NAME = 'daily_log';
+
+// ==================== Utils ====================
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function showLoading() { document.getElementById('loadingOverlay').classList.add('open'); }
+function hideLoading() { document.getElementById('loadingOverlay').classList.remove('open'); }
+
+function parseDate(str) {
+  const parts = str.replace(/-/g, '/').split('/');
+  return new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+}
+
+function formatDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}/${m}/${day}`;
+}
+
+function dateStr(d) { return formatDate(d); }
+
+function getDayOfWeek(d) {
+  return '週' + ['日','一','二','三','四','五','六'][d.getDay()];
+}
+
+function getWeekRange(d) {
+  const day = d.getDay() || 7;
+  const mon = new Date(d);
+  mon.setDate(d.getDate() - day + 1);
+  const sun = new Date(mon);
+  sun.setDate(mon.getDate() + 6);
+  return { start: mon, end: sun };
+}
+
+function getMonthRange(d) {
+  const start = new Date(d.getFullYear(), d.getMonth(), 1);
+  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return { start, end };
+}
+
+function getSortedDatesInRange(start, end) {
+  return state.dates.filter(d => {
+    const dt = parseDate(d);
+    return dt >= start && dt <= end;
+  }).sort();
+}
+
+function getStatus(actual, target, tolerance) {
+  if (target <= 0) return 'good';
+  const ratio = actual / target;
+  if (ratio >= 1 - tolerance/100 && ratio <= 1 + tolerance/100) return 'good';
+  if (ratio >= 1 - tolerance/100*2 && ratio <= 1 + tolerance/100*2) return 'warn';
+  return 'bad';
+}
+
+// ==================== Data Parsing ====================
+// 逐欄位解析一行 CSV，處理雙引號包覆與跳脫（"" -> "）
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        cur += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      result.push(cur); cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+// 欄位對應 daily_log 工作表：date, meal, items, calories, carbs_g, protein_g, fat_g
+// CSV 上傳與 gviz/tq 讀取（tqx=out:csv）皆使用同一套解析邏輯
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 1) return {};
+  const data = {};
+  let start = 0;
+  const header = lines[0].toLowerCase();
+  if (header.includes('date') || header.includes('meal')) start = 1;
+
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const parts = parseCSVLine(line);
+    if (parts.length < 2) continue;
+    const date = parts[0].trim().replace(/-/g, '/');
+    const meal = (parts[1] || '').trim();
+    const items = (parts[2] || '').trim();
+    if (!date) continue;
+    const cals = parseFloat(parts[3]) || 0;
+    const carb = parseFloat(parts[4]) || 0;
+    const prot = parseFloat(parts[5]) || 0;
+    const fat  = parseFloat(parts[6]) || 0;
+    if (!data[date]) data[date] = { meals: [], totals: { calories:0, protein:0, carbs:0, fat:0 } };
+    data[date].meals.push({ meal, items, calories:cals, protein:prot, carbs:carb, fat });
+    data[date].totals.calories += cals;
+    data[date].totals.protein += prot;
+    data[date].totals.carbs += carb;
+    data[date].totals.fat += fat;
+  }
+  for (const d of Object.keys(data)) {
+    for (const k of ['calories','protein','carbs','fat'])
+      data[d].totals[k] = Math.round(data[d].totals[k] * 10) / 10;
+  }
+  return data;
+}
+
+function initAfterData() {
+  state.dates = Object.keys(state.data).sort();
+  if (state.dates.length === 0) {
+    document.getElementById('statusDot').className = 'status-dot empty';
+    document.getElementById('statusText').textContent = '無資料';
+    updateAll();
+    return;
+  }
+  const last = state.dates[state.dates.length - 1];
+  state.cursor = parseDate(last);
+  updateAll();
+  document.getElementById('statusDot').className = 'status-dot loaded';
+  const totalMeals = Object.keys(state.data).reduce((s,d) => s + state.data[d].meals.length, 0);
+  document.getElementById('statusText').textContent = `${state.dates.length} 天 ${totalMeals} 筆紀錄`;
+  // Save to localStorage for offline
+  try { localStorage.setItem('nutritionData', JSON.stringify(state.data)); } catch(e) {}
+}
+
+// ==================== CSV / File ====================
+function loadCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    state.data = parseCSV(e.target.result);
+    initAfterData();
+    closeModal('dataModal');
+    showToast('✅ 已載入 ' + file.name);
+  };
+  reader.readAsText(file);
+  // Reset input so same file can be re-selected
+  event.target.value = '';
+}
+
+// ==================== Google Sheet (gviz/tq，免 API Key) ====================
+function buildGvizUrl(sheetId) {
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(GVIZ_SHEET_NAME)}`;
+}
+
+async function fetchGvizCSV(sheetId) {
+  const res = await fetch(buildGvizUrl(sheetId));
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  if (!text || /<html/i.test(text)) throw new Error('回應格式異常，請確認 Sheet ID 與檢視權限');
+  return text;
+}
+
+function saveSheetSettings() {
+  const input = document.getElementById('gsheetId');
+  state.sheetConfig.id = input ? input.value.trim() : state.sheetConfig.id;
+  try { localStorage.setItem('sheetConfig', JSON.stringify(state.sheetConfig)); } catch(e) {}
+  try { localStorage.setItem('sheet_id', state.sheetConfig.id || ''); } catch(e) {}
+}
+
+function loadSheetSettings() {
+  try {
+    const saved = localStorage.getItem('sheetConfig');
+    if (saved) state.sheetConfig = JSON.parse(saved);
+    if (!state.sheetConfig.id) {
+      const legacy = localStorage.getItem('sheet_id');
+      if (legacy) state.sheetConfig.id = legacy;
+    }
+    const input = document.getElementById('gsheetId');
+    if (input) input.value = state.sheetConfig.id || '';
+  } catch(e) {}
+}
+
+async function testGvizConnection() {
+  saveSheetSettings();
+  const { id } = state.sheetConfig;
+  const status = document.getElementById('sheetStatus');
+  if (!id) { status.textContent = '❌ 請輸入 Google Sheet ID'; return; }
+  status.textContent = '⏳ 測試中...';
+  try {
+    const text = await fetchGvizCSV(id);
+    const data = parseCSV(text);
+    const days = Object.keys(data).length;
+    status.textContent = `✅ 連線成功！讀到 ${days} 天資料（daily_log 工作表）`;
+  } catch(e) {
+    status.textContent = '❌ 連線失敗：' + e.message + '\n請確認 Sheet 已設為「知道連結的人皆可檢視」且包含 daily_log 工作表';
+  }
+}
+
+async function loadFromGviz(silent) {
+  saveSheetSettings();
+  const { id } = state.sheetConfig;
+  if (!id) {
+    if (!silent) showToast('⚠️ 請先輸入 Google Sheet ID');
+    return;
+  }
+  showLoading();
+  try {
+    const text = await fetchGvizCSV(id);
+    state.data = parseCSV(text);
+    initAfterData();
+    if (!silent) {
+      closeModal('dataModal');
+      showToast(`✅ 已從 Google Sheet 載入 ${state.dates.length} 天資料`);
+    }
+  } catch(e) {
+    showToast('❌ 載入失敗：' + e.message);
+  }
+  hideLoading();
+}
+
+// ==================== Sample Data ====================
+function loadSample() {
+  const sample = `date,meal,items,calories,carbs_g,protein_g,fat_g
+2026/07/01,早餐,燕麥奶拿鐵、堅果,360,30,11,23
+2026/07/01,午餐,鮭魚煎、藜麥沙拉,740,38,52,42
+2026/07/01,晚餐,希臘優格,140,8,15,4
+2026/07/02,早餐,茶葉蛋、地瓜(中)1條,380,54,16.5,11.3
+2026/07/02,午餐,雞胸肉200g、糙米飯1碗、花椰菜150g,625,63,70.5,8.5
+2026/07/02,晚餐,麻辣鴨血豆腐王子麵,540,52,18,28
+2026/07/03,早餐,香蕉、無糖豆漿300ml,230,38,13.4,3.7
+2026/07/03,午餐,全麥三明治(鮪魚)、蔬菜濃湯300ml,520,64,27,17
+2026/07/03,晚餐,烤雞腿200g、毛豆100g,460,12,51,23
+2026/07/04,午餐,牛肉麵1碗、蘋果1顆,675,87,32.5,22.3
+2026/07/04,宵夜,蔬菜蛋餅2份,420,36,18,24`;
+  state.data = parseCSV(sample);
+  initAfterData();
+  showToast('📋 已載入範例資料');
+}
+
+// ==================== Refresh ====================
+function refreshData() {
+  if (state.sheetConfig.id) {
+    loadFromGviz();
+    return;
+  }
+  // Try to reload from localStorage
+  try {
+    const saved = localStorage.getItem('nutritionData');
+    if (saved) {
+      state.data = JSON.parse(saved);
+      initAfterData();
+      showToast('🔄 已從離線快取載入');
+      return;
+    }
+  } catch(e) {}
+  showToast('⚠️ 無快取資料，請上傳 CSV 或設定 Google Sheet ID');
+}
+
+// ==================== Clear Cache ====================
+function clearCache() {
+  if (!confirm('確定清除本地快取資料？\n\n會清除：食物記錄資料\n保留：營養目標設定、Sheet ID 設定')) return;
+  try { localStorage.removeItem('nutritionData'); } catch(e) {}
+  state.data = {};
+  state.dates = [];
+  if (state.chart) { state.chart.destroy(); state.chart = null; }
+  updateAll();
+  document.getElementById('statusDot').className = 'status-dot empty';
+  document.getElementById('statusText').textContent = '已清除快取';
+  showToast('🗑️ 已清除快取，重新載入即可更新資料');
+  // Force service worker to re-fetch next time
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs => {
+      regs.forEach(r => r.update());
+    });
+  }
+}
+
+// ==================== Navigation ====================
+function navPrev() {
+  if (state.view === 'day') state.cursor.setDate(state.cursor.getDate() - 1);
+  else if (state.view === 'week') state.cursor.setDate(state.cursor.getDate() - 7);
+  else state.cursor.setMonth(state.cursor.getMonth() - 1);
+  updateAll();
+}
+
+function navNext() {
+  if (state.view === 'day') state.cursor.setDate(state.cursor.getDate() + 1);
+  else if (state.view === 'week') state.cursor.setDate(state.cursor.getDate() + 7);
+  else state.cursor.setMonth(state.cursor.getMonth() + 1);
+  updateAll();
+}
+
+function navToday() {
+  state.cursor = new Date();
+  updateAll();
+}
+
+function setView(v) {
+  state.view = v;
+  document.querySelectorAll('.nav-views button').forEach(b => b.classList.remove('active'));
+  document.getElementById('view' + v.charAt(0).toUpperCase() + v.slice(1)).classList.add('active');
+  updateAll();
+}
+
+// ==================== Settings ====================
+function loadSettings() {
+  try {
+    const saved = localStorage.getItem('nutritionTargets');
+    if (saved) {
+      state.targets = JSON.parse(saved);
+      for (const n of NUTRIENTS) {
+        const k = n.key;
+        document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].target;
+        document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].tolerance;
+      }
+    }
+  } catch(e) {}
+}
+
+function saveSettings() {
+  for (const n of NUTRIENTS) {
+    const k = n.key;
+    const t = parseFloat(document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value) || 0;
+    const tol = parseFloat(document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value) || 10;
+    state.targets[k] = { target: t, tolerance: tol };
+  }
+  localStorage.setItem('nutritionTargets', JSON.stringify(state.targets));
+  closeModal('settingsModal');
+  updateAll();
+  showToast('✅ 目標已儲存');
+}
+
+function showSettings() {
+  for (const n of NUTRIENTS) {
+    const k = n.key;
+    document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].target;
+    document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].tolerance;
+  }
+  document.getElementById('settingsModal').classList.add('open');
+}
+
+function showDataImport() {
+  loadSheetSettings();
+  document.getElementById('sheetStatus').textContent = '';
+  document.getElementById('dataModal').classList.add('open');
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+function switchTab(el, tabId) {
+  const modal = el.closest('.modal');
+  modal.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  modal.querySelectorAll('.tab-pane').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(tabId).classList.add('active');
+}
+
+// ==================== Rendering ====================
+function updateAll() {
+  if (state.dates.length === 0) {
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('mainChart').style.display = 'none';
+    document.getElementById('summaryCards').innerHTML = '';
+    document.getElementById('foodBody').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#98a2b3;padding:16px">請先載入資料</td></tr>';
+    document.getElementById('dateLabel').textContent = '--';
+    document.getElementById('weekLabel').textContent = '';
+    return;
+  }
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('mainChart').style.display = 'block';
+  renderSummary();
+  renderChart();
+  renderFoodList();
+  updateLabels();
+}
+
+function updateLabels() {
+  const dateLabel = document.getElementById('dateLabel');
+  const weekLabel = document.getElementById('weekLabel');
+  if (state.view === 'day') {
+    const ds = dateStr(state.cursor);
+    const dow = getDayOfWeek(state.cursor);
+    dateLabel.textContent = `${ds} (${dow})`;
+    weekLabel.textContent = '';
+  } else if (state.view === 'week') {
+    const r = getWeekRange(state.cursor);
+    dateLabel.textContent = `${dateStr(r.start)} ~ ${dateStr(r.end)}`;
+    weekLabel.textContent = getDayOfWeek(r.start) + ' ~ ' + getDayOfWeek(r.end);
+  } else {
+    const y = state.cursor.getFullYear();
+    const m = state.cursor.getMonth() + 1;
+    dateLabel.textContent = `${y} 年 ${m} 月`;
+    weekLabel.textContent = '';
+  }
+}
+
+function renderSummary() {
+  const container = document.getElementById('summaryCards');
+  const tgt = state.targets;
+
+  if (state.view === 'day') {
+    const ds = dateStr(state.cursor);
+    const dayData = state.data[ds];
+    if (!dayData) {
+      container.innerHTML = NUTRIENTS.map(n =>
+        `<div class="card"><div class="label">${n.label}</div><div class="value" style="color:#98a2b3">--</div><div class="sub">無記錄</div></div>`
+      ).join('');
+      return;
+    }
+    container.innerHTML = NUTRIENTS.map(n => {
+      const actual = dayData.totals[n.key];
+      const t = tgt[n.key];
+      const pct = t.target > 0 ? Math.round(actual / t.target * 100) : 0;
+      const status = getStatus(actual, t.target, t.tolerance);
+      const diff = actual - t.target;
+      const diffTxt = diff > 0 ? `+${Math.round(diff)}` : Math.round(diff);
+      return `<div class="card status-${status}">
+        <div class="label">${n.label}</div>
+        <div class="value">${actual} <span style="font-size:12px;font-weight:400;color:#667085">/ ${t.target}</span></div>
+        <div class="sub">${pct}% · ${status === 'good' ? '✅ 達標' : status === 'warn' ? '⚠️ ' + diffTxt : '❌ ' + diffTxt}</div>
+        <div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(pct, 150)}%"></div></div>
+      </div>`;
+    }).join('');
+  } else {
+    let dates, rangeLabel;
+    if (state.view === 'week') {
+      const r = getWeekRange(state.cursor);
+      dates = getSortedDatesInRange(r.start, r.end);
+      rangeLabel = '本週平均';
+    } else {
+      const r = getMonthRange(state.cursor);
+      dates = getSortedDatesInRange(r.start, r.end);
+      rangeLabel = '本月平均';
+    }
+    if (dates.length === 0) {
+      container.innerHTML = NUTRIENTS.map(n =>
+        `<div class="card"><div class="label">${n.label}</div><div class="value" style="color:#98a2b3">--</div><div class="sub">${rangeLabel}</div></div>`
+      ).join('');
+      return;
+    }
+    const avg = { calories:0, protein:0, carbs:0, fat:0 };
+    for (const d of dates) {
+      for (const n of NUTRIENTS) avg[n.key] += state.data[d].totals[n.key];
+    }
+    for (const n of NUTRIENTS) avg[n.key] = Math.round(avg[n.key] / dates.length * 10) / 10;
+
+    container.innerHTML = NUTRIENTS.map(n => {
+      const t = tgt[n.key];
+      const pct = t.target > 0 ? Math.round(avg[n.key] / t.target * 100) : 0;
+      const status = getStatus(avg[n.key], t.target, t.tolerance);
+      return `<div class="card status-${status}">
+        <div class="label">${n.label} <span style="font-weight:400;color:#98a2b3">(${rangeLabel})</span></div>
+        <div class="value">${avg[n.key]} <span style="font-size:12px;font-weight:400;color:#667085">/ ${t.target}</span></div>
+        <div class="sub">${pct}% · ${dates.length} 天${status === 'good' ? ' ✅' : status === 'warn' ? ' ⚠️' : ' ❌'}</div>
+        <div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(pct, 150)}%"></div></div>
+      </div>`;
+    }).join('');
+  }
+}
+
+function renderChart() {
+  if (state.chart) { state.chart.destroy(); state.chart = null; }
+  const ctx = document.getElementById('mainChart').getContext('2d');
+
+  if (state.view === 'day') renderDayChart(ctx);
+  else if (state.view === 'week') renderWeekChart(ctx);
+  else renderMonthChart(ctx);
+}
+
+function barLabelPlugin(rawValues) {
+  return {
+    id: 'barLabels',
+    afterDatasetsDraw(chart) {
+      const meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = '#1a1a2e';
+      meta.data.forEach((bar, i) => {
+        const v = rawValues[i];
+        if (v === undefined || v === null) return;
+        const y = bar.y <= 16 ? bar.y + 14 : bar.y - 4;
+        ctx.fillText(String(v), bar.x, y);
+      });
+      ctx.restore();
+    }
+  };
+}
+
+function renderDayChart(ctx) {
+  const ds = dateStr(state.cursor);
+  const dayData = state.data[ds];
+  const tgt = state.targets;
+
+  if (!dayData) {
+    state.chart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: ['熱量','蛋白質','碳水','脂肪'], datasets: [{ label: '無資料', data: [0,0,0,0] }] },
+      options: { responsive: true, plugins: { title: { display: true, text: '此日無記錄' } } }
+    });
+    return;
+  }
+
+  const labels = NUTRIENTS.map(n => n.label);
+  const actuals = NUTRIENTS.map(n => dayData.totals[n.key]);
+  const pctValues = actuals.map((v, i) => {
+    const t = tgt[NUTRIENTS[i].key].target;
+    return t > 0 ? Math.round(v / t * 100) : 0;
+  });
+  const colors = actuals.map((v, i) => {
+    const st = getStatus(v, tgt[NUTRIENTS[i].key].target, tgt[NUTRIENTS[i].key].tolerance);
+    return st === 'good' ? '#12b76a' : st === 'warn' ? '#f79009' : '#f04438';
+  });
+  const yMax = Math.max(120, ...pctValues, 100) + 20;
+
+  state.chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '實際攝取',
+          data: pctValues,
+          backgroundColor: colors,
+          borderRadius: 4,
+          barPercentage: 0.5,
+        },
+        {
+          label: '目標值',
+          data: [100, 100, 100, 100],
+          type: 'line',
+          borderColor: '#1a1a2e',
+          borderDash: [6, 3],
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: false,
+          tension: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        title: { display: true, text: `📊 ${ds} 營養攝取達成率`, font: { size: 13 } },
+        legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const v = ctx.parsed.y;
+              const n = NUTRIENTS[ctx.dataIndex];
+              if (!n) return ` ${v}%`;
+              if (ctx.dataset.label === '實際攝取') {
+                const raw = actuals[ctx.dataIndex];
+                return ` 實際: ${raw} ${n.unit} (${v}%)`;
+              }
+              return ` 目標: ${tgt[n.key].target} ${n.unit} (100%)`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, max: yMax, title: { display: true, text: '達成率 %', font: { size: 11 } } }
+      }
+    },
+    plugins: [barLabelPlugin(actuals)]
+  });
+}
+
+function renderWeekChart(ctx) {
+  const r = getWeekRange(state.cursor);
+  const dates = getSortedDatesInRange(r.start, r.end);
+  if (dates.length === 0) {
+    state.chart = new Chart(ctx, {
+      type: 'bar', data: { labels: ['無資料'], datasets: [{ label: '本週無記錄', data: [0] }] },
+      options: { responsive: true }
+    });
+    return;
+  }
+
+  const tgt = state.targets;
+  const labels = dates.map(d => {
+    const dt = parseDate(d);
+    return d.slice(5) + '\n' + getDayOfWeek(dt);
+  });
+
+  // Store raw values for tooltip
+  const rawValues = {};
+  const datasets = NUTRIENTS.map(n => {
+    const vals = dates.map(d => state.data[d].totals[n.key]);
+    rawValues[n.label] = vals;
+    return {
+      label: n.label,
+      data: vals.map((v, i) => {
+        const target = tgt[n.key].target;
+        return target > 0 ? Math.round(v / target * 100) : 0;
+      }),
+      backgroundColor: n.color,
+      borderRadius: 3,
+    };
+  });
+
+  const targetData = NUTRIENTS.map(n => ({
+    label: `${n.label} 目標`,
+    data: Array(dates.length).fill(100),
+    type: 'line',
+    borderColor: n.color,
+    borderDash: [4, 3],
+    borderWidth: 1.5,
+    pointRadius: 0,
+    fill: false,
+    tension: 0,
+  }));
+  const allPcts = datasets.flatMap(d => d.data);
+  const yMax = Math.max(120, ...allPcts, 100) + 20;
+
+  state.chart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [...datasets, ...targetData] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      onClick: (e, elements) => {
+        if (elements.length > 0) {
+          state.cursor = parseDate(dates[elements[0].index]);
+          state.view = 'day';
+          updateAll();
+          document.querySelectorAll('.nav-views button').forEach(b => b.classList.remove('active'));
+          document.getElementById('viewDay').classList.add('active');
+        }
+      },
+      plugins: {
+        title: { display: true, text: `📊 ${dateStr(r.start)} ~ ${dateStr(r.end)} 達成率`, font: { size: 13 } },
+        legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const n = NUTRIENTS.find(nn => ctx.dataset.label === nn.label);
+              if (n) {
+                const raw = rawValues[n.label]?.[ctx.dataIndex];
+                return raw !== undefined ? ` ${n.label}: ${ctx.parsed.y}% (實際 ${raw} ${n.unit})` : ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+              }
+              return ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, max: yMax, title: { display: true, text: '達成率 %', font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+function renderMonthChart(ctx) {
+  const r = getMonthRange(state.cursor);
+  const dates = getSortedDatesInRange(r.start, r.end);
+  if (dates.length === 0) {
+    state.chart = new Chart(ctx, {
+      type: 'line', data: { labels: ['無資料'], datasets: [{ label: '本月無記錄', data: [0] }] },
+      options: { responsive: true }
+    });
+    return;
+  }
+
+  const tgt = state.targets;
+  const labels = dates.map(d => d.slice(5));
+
+  // Store raw values for tooltip
+  const rawValues = {};
+  const datasets = NUTRIENTS.map(n => {
+    const vals = dates.map(d => state.data[d].totals[n.key]);
+    rawValues[n.label] = vals;
+    return {
+      label: n.label,
+      data: vals.map((v, i) => {
+        const target = tgt[n.key].target;
+        return target > 0 ? Math.round(v / target * 100) : 0;
+      }),
+      borderColor: n.color,
+      backgroundColor: n.color + '18',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: n.color,
+      fill: true,
+      tension: 0.3,
+    };
+  });
+
+  const avgLines = NUTRIENTS.map(n => ({
+    label: `${n.label} 目標`,
+    data: Array(dates.length).fill(100),
+    type: 'line',
+    borderColor: n.color,
+    borderDash: [6, 4],
+    borderWidth: 1.5,
+    pointRadius: 0,
+    fill: false,
+    tension: 0,
+  }));
+  const allPcts = datasets.flatMap(d => d.data);
+  const yMax = Math.max(120, ...allPcts, 100) + 20;
+
+  state.chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [...datasets, ...avgLines] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { intersect: false, mode: 'index' },
+      onClick: (e, elements) => {
+        if (elements.length > 0) {
+          state.cursor = parseDate(dates[elements[0].index]);
+          state.view = 'day';
+          updateAll();
+          document.querySelectorAll('.nav-views button').forEach(b => b.classList.remove('active'));
+          document.getElementById('viewDay').classList.add('active');
+        }
+      },
+      plugins: {
+        title: { display: true, text: `📊 ${state.cursor.getFullYear()} 年 ${state.cursor.getMonth() + 1} 月 每日達成率`, font: { size: 13 } },
+        legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const n = NUTRIENTS.find(nn => ctx.dataset.label === nn.label);
+              if (n) {
+                const raw = rawValues[n.label]?.[ctx.dataIndex];
+                return raw !== undefined ? ` ${n.label}: ${ctx.parsed.y}% (實際 ${raw} ${n.unit})` : ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+              }
+              return ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, max: yMax, title: { display: true, text: '達成率 %', font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+function renderFoodList() {
+  const tbody = document.getElementById('foodBody');
+
+  if (state.view !== 'day') {
+    let dates;
+    if (state.view === 'week') {
+      const r = getWeekRange(state.cursor);
+      dates = getSortedDatesInRange(r.start, r.end);
+    } else {
+      const r = getMonthRange(state.cursor);
+      dates = getSortedDatesInRange(r.start, r.end);
+    }
+    if (dates.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#98a2b3;padding:16px">此區間無資料</td></tr>`;
+      return;
+    }
+    let html = '';
+    const grandTotals = { calories:0, protein:0, carbs:0, fat:0 };
+    for (const d of dates) {
+      const day = state.data[d];
+      const dt = day.totals;
+      html += `<tr style="background:#f8f9fc"><td colspan="6" style="font-size:11px;font-weight:600;color:#667085;padding:4px 10px">📅 ${d}</td></tr>`;
+      for (const m of day.meals) {
+        html += `<tr><td>${m.meal}</td><td class="food-name">${m.items}</td><td class="num">${m.calories}</td><td class="num">${m.protein}</td><td class="num">${m.carbs}</td><td class="num">${m.fat}</td></tr>`;
+      }
+      html += `<tr class="total-row" style="background:#fff"><td colspan="2">📊 本日合計</td>
+        <td class="num">${dt.calories}</td>
+        <td class="num">${dt.protein}</td>
+        <td class="num">${dt.carbs}</td>
+        <td class="num">${dt.fat}</td></tr>`;
+      grandTotals.calories += dt.calories;
+      grandTotals.protein += dt.protein;
+      grandTotals.carbs += dt.carbs;
+      grandTotals.fat += dt.fat;
+    }
+    for (const k of ['calories','protein','carbs','fat'])
+      grandTotals[k] = Math.round(grandTotals[k] * 10) / 10;
+    html += `<tr class="total-row"><td colspan="2">📊 總計 (${dates.length} 天)</td>
+      <td class="num">${grandTotals.calories}</td>
+      <td class="num">${grandTotals.protein}</td>
+      <td class="num">${grandTotals.carbs}</td>
+      <td class="num">${grandTotals.fat}</td></tr>`;
+    tbody.innerHTML = html;
+    return;
+  }
+
+  const ds = dateStr(state.cursor);
+  const dayData = state.data[ds];
+  if (!dayData || dayData.meals.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#98a2b3;padding:16px">當天無記錄</td></tr>`;
+    return;
+  }
+  let html = '';
+  for (const m of dayData.meals) {
+    html += `<tr><td>${m.meal}</td><td class="food-name">${m.items}</td><td class="num">${m.calories}</td><td class="num">${m.protein}</td><td class="num">${m.carbs}</td><td class="num">${m.fat}</td></tr>`;
+  }
+  html += `<tr class="total-row"><td colspan="2">📊 合計</td>
+    <td class="num">${dayData.totals.calories}</td>
+    <td class="num">${dayData.totals.protein}</td>
+    <td class="num">${dayData.totals.carbs}</td>
+    <td class="num">${dayData.totals.fat}</td></tr>`;
+  tbody.innerHTML = html;
+}
+
+// ==================== Init ====================
+// Load saved settings
+loadSettings();
+loadSheetSettings();
+
+// 支援 Bot「圖表」指令帶入的網址參數 ?sheet_id=...：自動寫入 localStorage 並清除網址參數
+const urlParams = new URLSearchParams(location.search);
+const urlSheetId = urlParams.get('sheet_id');
+if (urlSheetId) {
+  state.sheetConfig.id = urlSheetId;
+  saveSheetSettings();
+  const gsheetIdInput = document.getElementById('gsheetId');
+  if (gsheetIdInput) gsheetIdInput.value = urlSheetId;
+  urlParams.delete('sheet_id');
+  const newSearch = urlParams.toString();
+  history.replaceState({}, '', location.pathname + (newSearch ? '?' + newSearch : '') + location.hash);
+}
+
+if (urlSheetId) {
+  // 網址帶入 sheet_id 時，優先抓取最新資料（不使用舊快取）
+  loadFromGviz(true);
+} else {
+  try {
+    const saved = localStorage.getItem('nutritionData');
+    if (saved) {
+      state.data = JSON.parse(saved);
+      initAfterData();
+    } else if (state.sheetConfig.id) {
+      loadFromGviz(true);
+    } else {
+      loadSample();
+    }
+  } catch(e) {
+    loadSample();
+  }
+}
+
+// Close modals on overlay click
+document.getElementById('settingsModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal('settingsModal'); });
+document.getElementById('dataModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal('dataModal'); });
+
+// Register service worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js').catch(() => {});
+}
+</script>
+</body>
+</html>
