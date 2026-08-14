@@ -35,5 +35,8 @@ class Settings(BaseSettings):
     # M2（管理用 Google Sheet，users & buffer 工作表）使用
     admin_sheet_id: Optional[str] = None
 
+    # M8（「圖表」/「分析」指令組出 PWA 連結）使用，GitHub Pages 公開網址，不含結尾斜線
+    web_base_url: Optional[str] = None
+
 
 settings = Settings()

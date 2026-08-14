@@ -6,6 +6,7 @@
 
 import pytest
 
+from app.config import settings
 from app.core import dispatcher, downloader, sheets, vision
 
 
@@ -251,6 +252,48 @@ async def test_handle_text_today_command_without_bound_sheet(
     reply = await dispatcher.handle_text("line:U1", "今日")
 
     assert reply is not None and "綁定" in reply
+
+
+# --- 「圖表」/「分析」查詢指令 ---
+
+
+@pytest.mark.parametrize("command", ["圖表", "分析"])
+async def test_handle_text_chart_command_returns_pwa_link_with_sheet_id(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+    command: str,
+):
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []  # 「圖表」/「分析」不應被當成一般文字暫存
+    assert reply == "https://example.github.io/PlateScan/?sheet_id=sheet-abc"
+
+
+async def test_handle_text_chart_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "圖表")
+
+    assert reply is not None and "綁定" in reply
+
+
+async def test_handle_text_chart_command_without_web_base_url_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    monkeypatch.setattr(settings, "web_base_url", None)
+
+    reply = await dispatcher.handle_text("line:U1", "圖表")
+
+    assert reply is not None and "尚未部署" in reply
 
 
 # --- 「修正」指令 ---

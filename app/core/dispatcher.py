@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from app.config import settings
 from app.core import downloader, sheets, vision
 
 logger = logging.getLogger("app.core.dispatcher")
@@ -19,6 +20,7 @@ logger = logging.getLogger("app.core.dispatcher")
 OK_COMMAND = "ok"
 TODAY_COMMAND = "今日"
 CORRECT_COMMAND = "修正"
+CHART_COMMANDS = {"圖表", "分析"}
 
 _CORRECT_FIELD_ALIASES = {
     "熱量": "calories",
@@ -75,6 +77,9 @@ async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
 
     if stripped == TODAY_COMMAND:
         return await _handle_today(user_key)
+
+    if stripped in CHART_COMMANDS:
+        return await _handle_chart(user_key)
 
     parts = stripped.split()
     if parts and parts[0] == CORRECT_COMMAND:
@@ -153,6 +158,18 @@ async def _handle_today(user_key: str) -> str:
         f"{date} 累計（共 {len(rows)} 筆紀錄）：\n"
         f"熱量 {calories} kcal ｜ 碳水 {carbs_g}g ｜ 蛋白質 {protein_g}g ｜ 脂肪 {fat_g}g"
     )
+
+
+async def _handle_chart(user_key: str) -> str:
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+
+    if not settings.web_base_url:
+        logger.warning("WEB_BASE_URL 尚未設定，無法組出 PWA 儀表板連結")
+        return "PWA 儀表板尚未部署，請聯絡管理員"
+
+    return f"{settings.web_base_url}/?sheet_id={user['google_sheet_id']}"
 
 
 async def _handle_correct(user_key: str, args: list[str]) -> str:
