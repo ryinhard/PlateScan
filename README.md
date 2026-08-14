@@ -1,6 +1,6 @@
 # PlateScan
 
-營養素擷取與視覺化系統。架構設計詳見 [DESIGN-v6.md](DESIGN-v6.md)，開發規範詳見 [CLAUDE.md](CLAUDE.md)，目前進度詳見 [TODO.md](TODO.md)。
+營養素擷取與視覺化系統。架構設計詳見 [DESIGN-v6.md](DESIGN-v6.md)，開發規範詳見 [CLAUDE.md](CLAUDE.md)，目前進度詳見 [TODO.md](TODO.md)，Cloud Run／GitHub Pages 部署步驟詳見 [DEPLOY.md](DEPLOY.md)。
 
 ## 本機開發設置
 
