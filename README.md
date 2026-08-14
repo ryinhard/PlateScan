@@ -22,6 +22,14 @@ uvicorn app.main:app --reload
 
 伺服器啟動後可於 `http://127.0.0.1:8000/health` 確認存活狀態。
 
+## 執行測試
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
 ## 目前狀態
 
-M1：FastAPI 專案骨架 + LINE/Telegram Webhook echo。尚未串接 Gemini 辨識、Google Sheets 讀寫或前端 PWA，詳見 [TODO.md](TODO.md)。
+M1：FastAPI 專案骨架 + LINE/Telegram Webhook echo。
+M2：管理 Sheet（`users` & `buffer` 工作表）讀寫模組（`app/core/sheets.py`），以 gspread 存取管理用 Google Sheet，並以 `asyncio.Lock()` 依 user_key 序列化讀寫，防範連續傳送照片時的競態條件。尚未串接 Gemini 辨識或前端 PWA，詳見 [TODO.md](TODO.md)。
