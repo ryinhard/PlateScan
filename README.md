@@ -32,4 +32,5 @@ pytest
 ## 目前狀態
 
 M1：FastAPI 專案骨架 + LINE/Telegram Webhook echo。
-M2：管理 Sheet（`users` & `buffer` 工作表）讀寫模組（`app/core/sheets.py`），以 gspread 存取管理用 Google Sheet，並以 `asyncio.Lock()` 依 user_key 序列化讀寫，防範連續傳送照片時的競態條件。尚未串接 Gemini 辨識或前端 PWA，詳見 [TODO.md](TODO.md)。
+M2：管理 Sheet（`users` & `buffer` 工作表）讀寫模組（`app/core/sheets.py`），以 gspread 存取管理用 Google Sheet，並以 `asyncio.Lock()` 依 user_key 序列化讀寫，防範連續傳送照片時的競態條件。
+M3：新增 Core Handler（`app/core/dispatcher.py`），LINE/Telegram adapter 收到照片時將 message_id/file_id 暫存至 buffer 工作表，收到文字時判斷 `ok` 指令（觸發讀取 buffer 並記錄 log，實際 Gemini 辨識與清空 buffer 留待 M4）或視為餐點描述暫存。尚未串接 Gemini 辨識或前端 PWA，詳見 [TODO.md](TODO.md)。

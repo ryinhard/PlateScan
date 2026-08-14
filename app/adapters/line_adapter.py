@@ -1,7 +1,8 @@
-"""LINE Webhook adapter：簽章驗證與 echo（M1 骨架階段）。
+"""LINE Webhook adapter：簽章驗證、照片/文字事件分發（M3 階段）。
 
-M1 僅驗證來源、記錄收到的內容並回傳 ack，不呼叫 LINE Reply/Push API——
-真正的回覆/推播邏輯屬於 DESIGN-v6.md M6 里程碑範疇。
+驗證來源後，將 image 訊息的 message_id 與 text 訊息內容轉交
+app.core.dispatcher 統一處理（暫存至緩衝區 / 觸發 ok 指令）。
+真正的 Reply/Push 回覆邏輯屬於 DESIGN-v6.md M6 里程碑範疇，M3 階段不呼叫 LINE API。
 """
 
 import base64
@@ -13,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters.base import WebhookAck
 from app.config import settings
+from app.core import dispatcher
 
 logger = logging.getLogger("app.adapters.line")
 
@@ -42,5 +44,26 @@ async def line_webhook(request: Request) -> WebhookAck:
     logger.info("收到 LINE webhook：%d 筆事件", len(events))
     for event in events:
         logger.info("LINE event type=%s", event.get("type"))
+        await _dispatch_event(event)
 
     return WebhookAck(status="received", platform="line")
+
+
+async def _dispatch_event(event: dict) -> None:
+    """將單一 LINE message 事件轉交 dispatcher；非 message 事件或缺少 userId 時忽略。"""
+    if event.get("type") != "message":
+        return
+
+    user_id = event.get("source", {}).get("userId")
+    if not user_id:
+        logger.warning("LINE message 事件缺少 source.userId，略過：%s", event)
+        return
+
+    user_key = f"line:{user_id}"
+    message = event.get("message", {})
+    message_type = message.get("type")
+
+    if message_type == "image":
+        await dispatcher.handle_photo(user_key, message.get("id", ""))
+    elif message_type == "text":
+        await dispatcher.handle_text(user_key, message.get("text", ""))
