@@ -3,7 +3,8 @@
 LINE / Telegram adapter 皆呼叫本模組的 handle_photo() / handle_text()，
 統一轉換為 app.core.sheets 的 buffer / daily_log 讀寫操作，避免兩個 adapter
 各自重複實作。handle_text() 回傳值為欲回覆使用者的文字（無需回覆則為 None），
-實際透過 LINE Reply/Push 或 Telegram sendMessage 送出留待 M6 串接。
+實際透過 LINE Reply/Push（app.core.line_client）或 Telegram sendMessage
+（app.core.telegram_client）送出由各自 adapter 的 BackgroundTasks 負責。
 """
 
 import logging
@@ -52,7 +53,21 @@ async def handle_photo(user_key: str, photo_id: str) -> None:
 
 
 async def handle_text(user_key: str, text: str) -> Optional[str]:
-    """處理文字訊息：`ok` 觸發辨識與寫入、`今日` 查詢累計，其餘文字視為餐點描述追加至緩衝區。"""
+    """處理文字訊息，並確保任何未預期錯誤都會轉換成使用者看得懂的回覆文字。
+
+    背景任務（LINE/Telegram adapter 的 BackgroundTasks）若拋出例外會被框架吃掉、
+    不會送出任何 Reply/Push，使用者將完全收不到回應；因此在此統一攔截，
+    避免呼叫端（adapter）需要各自重複處理例外。
+    """
+    try:
+        return await _dispatch_text(user_key, text)
+    except Exception:
+        logger.exception("user_key=%s 處理文字訊息時發生未預期錯誤", user_key)
+        return "處理時發生錯誤，請稍後再試一次"
+
+
+async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
+    """依指令分派文字訊息：`ok` 觸發辨識與寫入、`今日` 查詢累計，其餘文字視為餐點描述追加至緩衝區。"""
     stripped = text.strip()
 
     if stripped.lower() == OK_COMMAND:

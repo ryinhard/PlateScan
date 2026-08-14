@@ -19,3 +19,6 @@ env/
 .claude/
 .DS_Store
 Thumbs.db
+
+# 本機開發用日誌（可能含 Bot Token 等機密於請求網址中，禁止提交）
+*.log

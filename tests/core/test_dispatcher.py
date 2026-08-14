@@ -356,3 +356,32 @@ async def test_handle_text_correct_command_rejects_invalid_input(
     assert get_user_calls == []  # 格式驗證應先於任何 I/O
     assert update_calls == []
     assert reply is not None and reply != ""
+
+
+async def test_handle_text_returns_fallback_reply_when_unexpected_error_occurs(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    """模擬 Gemini 503 等未預期例外：handle_text 不應向外拋出，而是回傳可回覆使用者的錯誤文字。
+
+    對應真實環境曾發生的情況：vision.analyze_meal() 拋出例外導致 BackgroundTasks
+    整個中斷、LINE/Telegram 使用者完全收不到任何回覆訊息。
+    """
+
+    async def _fake_get_buffer_items(user_key: str):
+        return [{"user_key": user_key, "item_type": "photo", "content": "msg-1"}]
+
+    async def _fake_download_photos(user_key: str, photo_ids: list[str]) -> list[bytes]:
+        return [b"fake-image-bytes"]
+
+    async def _raise_server_error(images, captions):
+        raise RuntimeError("503 UNAVAILABLE：模擬 Gemini 過載")
+
+    monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
+    monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)
+    monkeypatch.setattr(vision, "analyze_meal", _raise_server_error)
+
+    reply = await dispatcher.handle_text("line:U1", "ok")
+
+    assert reply == "處理時發生錯誤，請稍後再試一次"
