@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+.env
+.env.example
+credentials
+tests
+web
+.git
+.github
+*.md
