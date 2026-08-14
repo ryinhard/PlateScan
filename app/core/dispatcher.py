@@ -6,7 +6,7 @@ LINE / Telegram adapter 皆呼叫本模組的 handle_photo() / handle_text()，
 
 import logging
 
-from app.core import sheets
+from app.core import downloader, sheets, vision
 
 logger = logging.getLogger("app.core.dispatcher")
 
@@ -24,13 +24,26 @@ async def handle_text(user_key: str, text: str) -> None:
 
     if stripped.lower() == OK_COMMAND:
         items = await sheets.get_buffer_items(user_key)
+        photo_ids = [item["content"] for item in items if item["item_type"] == "photo"]
+        captions = [item["content"] for item in items if item["item_type"] == "text"]
+
+        if not photo_ids and not captions:
+            logger.info("user_key=%s 觸發 ok 指令，但緩衝區為空，略過辨識", user_key)
+            return
+
+        images = await downloader.download_photos(user_key, photo_ids)
+        result = await vision.analyze_meal(images, captions)
         logger.info(
-            "user_key=%s 觸發 ok 指令，緩衝區共 %d 筆項目，等待 M4 串接 Gemini Vision 辨識",
+            "user_key=%s 觸發 ok 指令，緩衝區 %d 張照片（成功下載 %d 張）+ %d 則文字，"
+            "Gemini 辨識出 %d 筆品項，等待 M5 串接寫入 daily_log",
             user_key,
-            len(items),
+            len(photo_ids),
+            len(images),
+            len(captions),
+            len(result),
         )
-        # TODO(M4): asyncio.gather 平行下載 items 中的照片 → Gemini Vision 辨識
-        # → 寫入使用者專屬 Sheet 的 daily_log → 辨識完成後呼叫 sheets.clear_buffer(user_key)
+        # TODO(M5): 將 result 依 daily_log 欄位格式寫入使用者專屬 Sheet
+        # → 寫入成功後呼叫 sheets.clear_buffer(user_key)
         return
 
     await sheets.append_buffer_item(user_key, "text", stripped)
