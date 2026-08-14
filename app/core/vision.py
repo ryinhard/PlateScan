@@ -18,7 +18,7 @@ from app.config import settings
 
 logger = logging.getLogger("app.core.vision")
 
-_MODEL_NAME = "gemini-2.5-flash"
+_MODEL_NAME = "gemini-flash-latest"
 
 _PROMPT = """你是專業營養師。請分析以下餐點照片與文字描述，估算每個食物品項的營養素。
 
