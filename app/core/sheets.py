@@ -23,6 +23,7 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 USERS_WORKSHEET = "users"
 BUFFER_WORKSHEET = "buffer"
+DAILY_LOG_WORKSHEET = "daily_log"
 
 
 @functools.lru_cache(maxsize=1)
@@ -45,7 +46,27 @@ def _get_worksheet(name: str) -> gspread.Worksheet:
     return _get_admin_sheet().worksheet(name)
 
 
-# --- Async Lock：以 user_key 為單位，序列化同一使用者對管理 Sheet 的讀寫 ---
+# --- 使用者個人 Google Sheet（google_sheet_id 對應，M5 daily_log 讀寫用） ---
+# 每位使用者的 Sheet ID 不同，無法沿用 _get_admin_sheet() 的單一快取，
+# 改以 dict 依 google_sheet_id 個別快取 Spreadsheet 物件，避免重複開表。
+
+_user_spreadsheets: dict[str, gspread.Spreadsheet] = {}
+
+
+def _get_user_spreadsheet(google_sheet_id: str) -> gspread.Spreadsheet:
+    """開啟並快取使用者個人 Google Sheet（依 google_sheet_id 個別快取）。"""
+    if google_sheet_id not in _user_spreadsheets:
+        _user_spreadsheets[google_sheet_id] = _get_client().open_by_key(google_sheet_id)
+    return _user_spreadsheets[google_sheet_id]
+
+
+def _get_user_worksheet(google_sheet_id: str, name: str) -> gspread.Worksheet:
+    """依 google_sheet_id 與工作表名稱（daily_log / goals）取得對應的 worksheet 物件。"""
+    return _get_user_spreadsheet(google_sheet_id).worksheet(name)
+
+
+# --- Async Lock：以 user_key（或使用者個人 Sheet 讀寫時的 google_sheet_id）為單位，
+# 序列化同一把鎖對應資源的讀寫 ---
 
 _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
@@ -168,3 +189,91 @@ async def clear_buffer(user_key: str) -> None:
     lock = await _get_lock(user_key)
     async with lock:
         await asyncio.to_thread(_write)
+
+
+# --- daily_log 工作表（使用者個人 Sheet）：date | meal | items | calories | carbs_g | protein_g | fat_g ---
+# 對應 ok 指令辨識完成後的彙整寫入，以及「今日」指令的查詢加總（app/core/dispatcher.py）。
+
+
+def _row_to_daily_log(row: list[str]) -> dict[str, Any]:
+    def _to_number(value: str) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "date": row[0] if len(row) > 0 else "",
+        "meal": row[1] if len(row) > 1 else "",
+        "items": row[2] if len(row) > 2 else "",
+        "calories": _to_number(row[3] if len(row) > 3 else ""),
+        "carbs_g": _to_number(row[4] if len(row) > 4 else ""),
+        "protein_g": _to_number(row[5] if len(row) > 5 else ""),
+        "fat_g": _to_number(row[6] if len(row) > 6 else ""),
+    }
+
+
+async def append_daily_log(
+    google_sheet_id: str,
+    date: str,
+    meal: str,
+    items: str,
+    calories: float,
+    carbs_g: float,
+    protein_g: float,
+    fat_g: float,
+) -> None:
+    """將一筆彙整後的餐次紀錄寫入使用者個人 Sheet 的 daily_log 工作表。"""
+
+    def _write() -> None:
+        worksheet = _get_user_worksheet(google_sheet_id, DAILY_LOG_WORKSHEET)
+        worksheet.append_row([date, meal, items, calories, carbs_g, protein_g, fat_g])
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        await asyncio.to_thread(_write)
+
+
+async def get_daily_log_rows(google_sheet_id: str, date: str) -> list[dict[str, Any]]:
+    """讀取使用者個人 Sheet 中指定日期（格式 YYYY/MM/DD）的所有 daily_log 紀錄。"""
+
+    def _read() -> list[dict[str, Any]]:
+        worksheet = _get_user_worksheet(google_sheet_id, DAILY_LOG_WORKSHEET)
+        rows = worksheet.get_all_values()[1:]
+        return [_row_to_daily_log(row) for row in rows if row and row[0] == date]
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        return await asyncio.to_thread(_read)
+
+
+_DAILY_LOG_FIELD_COLUMNS = {
+    "meal": "B",
+    "calories": "D",
+    "carbs_g": "E",
+    "protein_g": "F",
+    "fat_g": "G",
+}
+
+
+async def update_latest_daily_log_field(google_sheet_id: str, field: str, value: Any) -> bool:
+    """修正使用者個人 Sheet 中 daily_log 最後一列（最近一筆紀錄）的指定欄位。
+
+    對應「修正 熱量 700」「修正 餐次 午餐」等指令。field 須為
+    _DAILY_LOG_FIELD_COLUMNS 的其中一個 key。daily_log 尚無任何紀錄
+    （只有表頭列或全空）時回傳 False，呼叫端應提示使用者尚無可修正的紀錄。
+    """
+
+    def _write() -> bool:
+        worksheet = _get_user_worksheet(google_sheet_id, DAILY_LOG_WORKSHEET)
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return False
+        last_row = len(all_values)  # gspread 列號從 1 起算，含表頭列
+        column_letter = _DAILY_LOG_FIELD_COLUMNS[field]
+        worksheet.update(range_name=f"{column_letter}{last_row}", values=[[value]])
+        return True
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        return await asyncio.to_thread(_write)

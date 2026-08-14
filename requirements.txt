@@ -6,3 +6,4 @@ gspread
 google-auth
 httpx
 google-genai
+tzdata

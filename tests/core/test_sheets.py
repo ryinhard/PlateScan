@@ -77,6 +77,15 @@ def fake_buffer_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWorksheet:
     return ws
 
 
+@pytest.fixture()
+def fake_daily_log_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWorksheet:
+    ws = FakeWorksheet(["date", "meal", "items", "calories", "carbs_g", "protein_g", "fat_g"])
+    monkeypatch.setattr(
+        sheets, "_get_user_worksheet", lambda google_sheet_id, name: ws
+    )
+    return ws
+
+
 # --- users 工作表 ---
 
 
@@ -253,3 +262,81 @@ async def test_concurrent_buffer_writes_for_different_users_are_not_serialized(
 
     barrier.set()
     await holder_task
+
+
+# --- daily_log 工作表（使用者個人 Sheet） ---
+
+
+async def test_append_daily_log_writes_row_in_expected_column_order(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    await sheets.append_daily_log(
+        "sheet-abc", "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20
+    )
+
+    assert fake_daily_log_ws.rows[1] == [
+        "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20
+    ]
+
+
+async def test_get_daily_log_rows_filters_by_date_and_parses_numbers(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22"])
+    fake_daily_log_ws.rows.append(["2026/08/15", "早餐", "蛋餅", "400", "45", "15", "18"])
+    fake_daily_log_ws.rows.append(["2026/08/15", "午餐", "雞腿便當", "650", "80", "30", "20"])
+
+    rows = await sheets.get_daily_log_rows("sheet-abc", "2026/08/15")
+
+    assert [row["meal"] for row in rows] == ["早餐", "午餐"]
+    assert rows[0] == {
+        "date": "2026/08/15",
+        "meal": "早餐",
+        "items": "蛋餅",
+        "calories": 400.0,
+        "carbs_g": 45.0,
+        "protein_g": 15.0,
+        "fat_g": 18.0,
+    }
+
+
+async def test_get_daily_log_rows_returns_empty_list_when_no_match(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22"])
+
+    rows = await sheets.get_daily_log_rows("sheet-abc", "2026/08/15")
+
+    assert rows == []
+
+
+async def test_update_latest_daily_log_field_updates_only_last_row_numeric_field(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22"])
+    fake_daily_log_ws.rows.append(["2026/08/15", "午餐", "雞腿便當", "650", "80", "30", "20"])
+
+    updated = await sheets.update_latest_daily_log_field("sheet-abc", "calories", 999)
+
+    assert updated is True
+    assert fake_daily_log_ws.rows[1][3] == "700"  # 較早的一列不受影響
+    assert fake_daily_log_ws.rows[2][3] == 999  # 最後一列（最近一筆）被更新
+
+
+async def test_update_latest_daily_log_field_updates_meal_label(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    fake_daily_log_ws.rows.append(["2026/08/15", "晚餐", "雞腿便當", "650", "80", "30", "20"])
+
+    updated = await sheets.update_latest_daily_log_field("sheet-abc", "meal", "午餐")
+
+    assert updated is True
+    assert fake_daily_log_ws.rows[1][1] == "午餐"
+
+
+async def test_update_latest_daily_log_field_returns_false_when_no_records(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    updated = await sheets.update_latest_daily_log_field("sheet-abc", "calories", 700)
+
+    assert updated is False
