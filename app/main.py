@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.adapters.line_adapter import router as line_router
 from app.adapters.tg_adapter import router as tg_router
+from app.core import telegram_client
 
 # 匯入時即會觸發 app.config 中 Settings() 的實例化與驗證，
 # 若缺少必要環境變數會在此立即以 ValidationError 清楚失敗。
@@ -21,7 +22,8 @@ app.include_router(tg_router)
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """啟動時記錄伺服器已就緒。"""
+    """啟動時記錄伺服器已就緒，並向 Telegram 註冊指令選單（setMyCommands）。"""
+    await telegram_client.set_my_commands()
     logger.info("PlateScan 啟動完成，line/telegram adapter 已就緒")
 
 

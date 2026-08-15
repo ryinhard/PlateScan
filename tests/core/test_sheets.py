@@ -379,3 +379,108 @@ async def test_get_goals_returns_empty_list_when_no_rows(fake_goals_ws: FakeWork
     goals = await sheets.get_goals("sheet-abc")
 
     assert goals == []
+
+
+async def test_upsert_goal_appends_new_row_when_absent(fake_goals_ws: FakeWorksheet):
+    await sheets.upsert_goal("sheet-abc", "calories", 2000, "kcal")
+
+    assert len(fake_goals_ws.rows) == 2  # header + 新增列
+    assert fake_goals_ws.rows[1] == ["calories", 2000, "kcal"]
+
+
+async def test_upsert_goal_updates_existing_row_in_place(fake_goals_ws: FakeWorksheet):
+    fake_goals_ws.rows.append(["calories", "1800", "kcal"])
+    fake_goals_ws.rows.append(["protein", "100", "g"])
+
+    await sheets.upsert_goal("sheet-abc", "calories", 2000, "kcal")
+
+    assert len(fake_goals_ws.rows) == 3  # header + 2 列，沒有新增列而是原地更新
+    assert fake_goals_ws.rows[1] == ["calories", 2000, "kcal"]
+    assert fake_goals_ws.rows[2] == ["protein", "100", "g"]
+
+
+# --- ensure_user_worksheets／get_service_account_email（新使用者引導流程用） ---
+
+
+class FakeSheetTab:
+    def __init__(self, title: str) -> None:
+        self.title = title
+        self.appended: list[list] = []
+
+    def append_row(self, row: list) -> None:
+        self.appended.append(row)
+
+
+class FakeSpreadsheet:
+    def __init__(self, existing_titles: list[str]) -> None:
+        self.tabs = {title: FakeSheetTab(title) for title in existing_titles}
+        self.added: list[str] = []
+
+    def worksheets(self) -> list[FakeSheetTab]:
+        return list(self.tabs.values())
+
+    def add_worksheet(self, title: str, rows: int, cols: int) -> FakeSheetTab:
+        tab = FakeSheetTab(title)
+        self.tabs[title] = tab
+        self.added.append(title)
+        return tab
+
+
+async def test_ensure_user_worksheets_creates_missing_worksheets_with_headers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_spreadsheet = FakeSpreadsheet(existing_titles=[])
+    monkeypatch.setattr(sheets, "_get_user_spreadsheet", lambda google_sheet_id: fake_spreadsheet)
+
+    created = await sheets.ensure_user_worksheets("sheet-abc")
+
+    assert created == ["daily_log", "goals"]
+    assert fake_spreadsheet.added == ["daily_log", "goals"]
+    assert fake_spreadsheet.tabs["daily_log"].appended == [
+        ["date", "meal", "items", "calories", "carbs_g", "protein_g", "fat_g", "confidence"]
+    ]
+    assert fake_spreadsheet.tabs["goals"].appended == [["nutrient", "target", "unit"]]
+
+
+async def test_ensure_user_worksheets_skips_when_all_exist(monkeypatch: pytest.MonkeyPatch):
+    fake_spreadsheet = FakeSpreadsheet(existing_titles=["daily_log", "goals"])
+    monkeypatch.setattr(sheets, "_get_user_spreadsheet", lambda google_sheet_id: fake_spreadsheet)
+
+    created = await sheets.ensure_user_worksheets("sheet-abc")
+
+    assert created == []
+    assert fake_spreadsheet.added == []
+
+
+async def test_ensure_user_worksheets_creates_only_missing_one(monkeypatch: pytest.MonkeyPatch):
+    fake_spreadsheet = FakeSpreadsheet(existing_titles=["daily_log"])
+    monkeypatch.setattr(sheets, "_get_user_spreadsheet", lambda google_sheet_id: fake_spreadsheet)
+
+    created = await sheets.ensure_user_worksheets("sheet-abc")
+
+    assert created == ["goals"]
+
+
+async def test_ensure_user_worksheets_propagates_access_error(monkeypatch: pytest.MonkeyPatch):
+    def _raise(google_sheet_id: str):
+        raise RuntimeError("PERMISSION_DENIED")
+
+    monkeypatch.setattr(sheets, "_get_user_spreadsheet", _raise)
+
+    with pytest.raises(RuntimeError):
+        await sheets.ensure_user_worksheets("sheet-abc")
+
+
+def test_get_service_account_email_reads_from_client_credentials(monkeypatch: pytest.MonkeyPatch):
+    class FakeAuth:
+        service_account_email = "sa@example.iam.gserviceaccount.com"
+
+    class FakeHttpClient:
+        auth = FakeAuth()
+
+    class FakeClient:
+        http_client = FakeHttpClient()
+
+    monkeypatch.setattr(sheets, "_get_client", lambda: FakeClient())
+
+    assert sheets.get_service_account_email() == "sa@example.iam.gserviceaccount.com"

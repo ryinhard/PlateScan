@@ -116,6 +116,7 @@ PlateScan/
 │   ├── service-worker.js     # 離線快取
 │   └── icon.svg              # App 圖示
 ├── docs/                     # 系統設計文件（本檔案所在目錄）
+├── scripts/                  # 一次性維運腳本（如 LINE Rich Menu 設定，非後端執行期程式碼）
 ├── Dockerfile
 └── requirements.txt
 ```

@@ -31,6 +31,14 @@ def _text_event(text: str, user_id: str = "U1", reply_token: str = "token-1") ->
     }
 
 
+def _follow_event(user_id: str = "U1", reply_token: str = "token-1") -> dict:
+    return {
+        "type": "follow",
+        "replyToken": reply_token,
+        "source": {"userId": user_id},
+    }
+
+
 async def test_dispatch_event_handles_photo_synchronously_without_scheduling_task(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -96,6 +104,47 @@ async def test_dispatch_event_non_ok_text_does_not_trigger_loading_animation(
     await line_adapter._dispatch_event(_text_event("今日"), background_tasks)
 
     assert loading_calls == []
+
+
+async def test_dispatch_event_follow_replies_with_onboarding_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(dispatcher, "get_onboarding_text", lambda: "歡迎使用 PlateScan！")
+
+    reply_calls: list[tuple[str, str]] = []
+
+    async def _fake_reply(reply_token: str, text: str) -> None:
+        reply_calls.append((reply_token, text))
+
+    monkeypatch.setattr(line_client, "reply_message", _fake_reply)
+
+    background_tasks = BackgroundTasks()
+    await line_adapter._dispatch_event(_follow_event(), background_tasks)
+
+    assert reply_calls == [("token-1", "歡迎使用 PlateScan！")]
+    assert background_tasks.tasks == []  # follow 事件同步處理，不排背景任務
+
+
+async def test_dispatch_event_follow_falls_back_to_push_when_reply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(dispatcher, "get_onboarding_text", lambda: "歡迎使用 PlateScan！")
+
+    async def _fake_reply(reply_token: str, text: str) -> None:
+        raise RuntimeError("reply token 已使用過")
+
+    push_calls: list[tuple[str, str]] = []
+
+    async def _fake_push(user_id: str, text: str) -> None:
+        push_calls.append((user_id, text))
+
+    monkeypatch.setattr(line_client, "reply_message", _fake_reply)
+    monkeypatch.setattr(line_client, "push_message", _fake_push)
+
+    background_tasks = BackgroundTasks()
+    await line_adapter._dispatch_event(_follow_event(), background_tasks)
+
+    assert push_calls == [("U1", "歡迎使用 PlateScan！")]
 
 
 async def test_process_text_reply_uses_reply_within_time_limit(

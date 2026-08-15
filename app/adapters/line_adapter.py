@@ -55,8 +55,16 @@ async def line_webhook(request: Request, background_tasks: BackgroundTasks) -> W
 
 
 async def _dispatch_event(event: dict, background_tasks: BackgroundTasks) -> None:
-    """將單一 LINE message 事件轉交處理；非 message 事件或缺少 userId 時忽略。"""
-    if event.get("type") != "message":
+    """將單一 LINE 事件轉交處理；支援 `message`（照片/文字）與 `follow`（加好友，回覆新手引導），
+    其餘事件類型或缺少 userId 時忽略。
+    """
+    event_type = event.get("type")
+
+    if event_type == "follow":
+        await _handle_follow_event(event)
+        return
+
+    if event_type != "message":
         return
 
     user_id = event.get("source", {}).get("userId")
@@ -78,12 +86,32 @@ async def _dispatch_event(event: dict, background_tasks: BackgroundTasks) -> Non
     text = message.get("text", "")
     reply_token = event.get("replyToken", "")
 
-    if text.strip().lower() == dispatcher.OK_COMMAND:
+    if dispatcher.is_ok_command(text):
         await line_client.start_loading_animation(user_id)
 
     background_tasks.add_task(
         _process_text_reply, user_key, text, user_id, reply_token, time.monotonic()
     )
+
+
+async def _handle_follow_event(event: dict) -> None:
+    """使用者加好友時觸發：立即回覆新手引導文字，說明如何建立/分享個人 Google Sheet。"""
+    user_id = event.get("source", {}).get("userId")
+    if not user_id:
+        logger.warning("LINE follow 事件缺少 source.userId，略過：%s", event)
+        return
+
+    onboarding_text = dispatcher.get_onboarding_text()
+    reply_token = event.get("replyToken", "")
+
+    if reply_token:
+        try:
+            await line_client.reply_message(reply_token, onboarding_text)
+            return
+        except Exception as exc:
+            logger.warning("LINE follow 事件 Reply 失敗，改用 Push user_id=%s：%s", user_id, exc)
+
+    await line_client.push_message(user_id, onboarding_text)
 
 
 async def _process_text_reply(

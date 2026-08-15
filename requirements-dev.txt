@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest
 pytest-asyncio
+Pillow  # scripts/setup_line_richmenu.py 產生 Rich Menu 選單圖用，非後端執行期依賴

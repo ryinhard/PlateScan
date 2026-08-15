@@ -35,4 +35,4 @@ Bot 與 PWA 統一使用以下 Google Sheet 工作表結構，確保前後端讀
 | protein | 120 | g |
 | fat | 60 | g |
 
-> `goals` 工作表目前僅供 PWA 讀取顯示達成率使用；Bot 端尚無寫入/查詢 `goals` 的指令（見 [commands.md](commands.md) 的 `目標` 指令狀態）。
+> `goals` 工作表供 PWA 讀取顯示達成率使用，Bot 端亦可透過 `目標`／`設定目標` 指令查詢與寫入（見 [commands.md](commands.md)）。

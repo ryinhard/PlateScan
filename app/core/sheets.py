@@ -309,3 +309,68 @@ async def get_goals(google_sheet_id: str) -> list[dict[str, Any]]:
     lock = await _get_lock(google_sheet_id)
     async with lock:
         return await asyncio.to_thread(_read)
+
+
+_DAILY_LOG_HEADER = ["date", "meal", "items", "calories", "carbs_g", "protein_g", "fat_g", "confidence"]
+_GOALS_HEADER = ["nutrient", "target", "unit"]
+
+
+async def ensure_user_worksheets(google_sheet_id: str) -> list[str]:
+    """確保使用者個人 Sheet 具備 daily_log／goals 工作表，缺少時自動建立並寫入表頭。
+
+    對應「設定 {Sheet ID}」指令：使用者只需建立一個空白 Sheet 分享編輯權限即可，
+    不必自行複製範本或手動建立分頁。回傳這次實際新增的工作表名稱（供組裝提示訊息），
+    兩個工作表皆已存在時回傳空列表。開啟 Sheet 失敗（ID 錯誤或尚未分享編輯權限）時，
+    底層 gspread 例外原樣往外拋出，由呼叫端（dispatcher._handle_set）轉換成使用者看得懂的錯誤訊息。
+    """
+
+    def _write() -> list[str]:
+        spreadsheet = _get_user_spreadsheet(google_sheet_id)
+        existing_titles = {worksheet.title for worksheet in spreadsheet.worksheets()}
+        created: list[str] = []
+
+        if DAILY_LOG_WORKSHEET not in existing_titles:
+            worksheet = spreadsheet.add_worksheet(
+                title=DAILY_LOG_WORKSHEET, rows=1000, cols=len(_DAILY_LOG_HEADER)
+            )
+            worksheet.append_row(_DAILY_LOG_HEADER)
+            created.append(DAILY_LOG_WORKSHEET)
+
+        if GOALS_WORKSHEET not in existing_titles:
+            worksheet = spreadsheet.add_worksheet(title=GOALS_WORKSHEET, rows=100, cols=len(_GOALS_HEADER))
+            worksheet.append_row(_GOALS_HEADER)
+            created.append(GOALS_WORKSHEET)
+
+        return created
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        return await asyncio.to_thread(_write)
+
+
+def get_service_account_email() -> str:
+    """回傳目前 Service Account 的 email，供 Bot 回覆訊息引導使用者設定 Google Sheet 共用權限。
+
+    gspread 6.x 的憑證物件掛在 Client.http_client.auth（並非 Client.auth），已用
+    inspect.getsource() 實際核對過 gspread 原始碼確認此存取路徑。
+    """
+    return _get_client().http_client.auth.service_account_email
+
+
+async def upsert_goal(google_sheet_id: str, nutrient: str, target: Any, unit: str) -> None:
+    """新增或更新 goals 工作表中對應 nutrient 的一筆目標值。
+
+    對應「設定目標 熱量 2000」指令：nutrient 已存在時更新該列，否則新增一列。
+    """
+
+    def _write() -> None:
+        worksheet = _get_user_worksheet(google_sheet_id, GOALS_WORKSHEET)
+        cell = worksheet.find(nutrient, in_column=1)
+        if cell is None:
+            worksheet.append_row([nutrient, target, unit])
+        else:
+            worksheet.update(range_name=f"B{cell.row}:C{cell.row}", values=[[target, unit]])
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        await asyncio.to_thread(_write)

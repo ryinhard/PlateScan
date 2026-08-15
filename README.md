@@ -4,6 +4,10 @@ AI 飲食紀錄與視覺化系統：拍照傳送給 LINE / Telegram Bot，AI 自
 
 系統架構詳見 [docs/architecture.md](docs/architecture.md)，指令規格詳見 [docs/commands.md](docs/commands.md)，資料表欄位詳見 [docs/data-schema.md](docs/data-schema.md)，部署步驟詳見 [docs/deployment.md](docs/deployment.md)。
 
+## 給使用者：如何開始使用
+
+已經加 LINE 好友或開始跟 Telegram Bot 對話？加好友／首次對話當下 Bot 會自動傳送設定教學；完整圖文版（含 Google Sheet 建立與權限設定步驟）見 [docs/getting-started.md](docs/getting-started.md)。
+
 ## 本機開發設置
 
 需求：Python 3.10+

@@ -51,6 +51,13 @@ def fake_user(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sheets, "get_user", _fake_get_user)
 
 
+@pytest.fixture()
+def fake_service_account_email(monkeypatch: pytest.MonkeyPatch) -> str:
+    email = "sa@example.iam.gserviceaccount.com"
+    monkeypatch.setattr(sheets, "get_service_account_email", lambda: email)
+    return email
+
+
 @pytest.mark.parametrize("command", ["ok", "OK", " ok ", "Ok\n"])
 async def test_handle_text_ok_command_downloads_photos_and_calls_gemini(
     monkeypatch: pytest.MonkeyPatch,
@@ -198,11 +205,12 @@ async def test_handle_text_ok_command_skips_recognition_when_buffer_empty(
     monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)
     monkeypatch.setattr(vision, "analyze_meal", _fake_analyze_meal)
 
-    await dispatcher.handle_text("line:U1", "ok")
+    reply = await dispatcher.handle_text("line:U1", "ok")
 
     assert spy_append == []
     assert download_calls == []  # 緩衝區為空時不應呼叫下載或辨識
     assert analyze_calls == []
+    assert reply == "緩衝區是空的，請先傳照片或輸入餐點描述"  # Rich Menu 按鈕點擊時也應收到提示，而非完全靜默
 
 
 # --- 「今日」查詢指令 ---
@@ -278,7 +286,9 @@ async def test_handle_text_chart_command_returns_pwa_link_with_sheet_id(
     reply = await dispatcher.handle_text("line:U1", command)
 
     assert spy_append == []  # 「圖表」/「分析」不應被當成一般文字暫存
-    assert reply == "https://example.github.io/PlateScan/?sheet_id=sheet-abc"
+    assert reply is not None
+    assert reply.startswith("https://example.github.io/PlateScan/?sheet_id=sheet-abc\n")
+    assert "知道連結的人可檢視" in reply
 
 
 async def test_handle_text_chart_command_without_bound_sheet(
@@ -451,6 +461,28 @@ async def test_handle_text_help_command_returns_static_command_list(
     assert reply is not None and "ok" in reply and "設定" in reply
 
 
+# --- 「新手教學」指令（LINE follow / Telegram /start 皆會觸發） ---
+
+
+@pytest.mark.parametrize("command", ["新手教學", "教學", "start", "/start"])
+async def test_handle_text_onboarding_command_returns_setup_guide(
+    spy_append: list[tuple[str, str, str]],
+    fake_service_account_email: str,
+    command: str,
+):
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []  # 不應被當成一般文字暫存
+    assert reply is not None
+    assert fake_service_account_email in reply
+    assert "設定 {Sheet ID}" in reply
+    assert "知道連結的任何人" in reply
+
+
+def test_get_onboarding_text_embeds_service_account_email(fake_service_account_email: str):
+    assert fake_service_account_email in dispatcher.get_onboarding_text()
+
+
 # --- 「取消」指令 ---
 
 
@@ -487,14 +519,44 @@ async def test_handle_text_set_command_binds_new_sheet_id(
     async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
         upsert_calls.append((user_key, google_sheet_id, display_name))
 
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return []  # 分頁已存在，本次沒有新建
+
     monkeypatch.setattr(sheets, "get_user", _fake_get_user)
     monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
 
     reply = await dispatcher.handle_text("line:U1", "設定 sheet-new")
 
     assert spy_append == []
     assert upsert_calls == [("line:U1", "sheet-new", "")]
-    assert reply is not None and "sheet-new" in reply
+    assert reply is not None
+    assert "sheet-new" in reply
+    assert "已自動建立" not in reply  # 分頁已存在時不出現這行
+    assert "設定目標" in reply  # 目標設定提醒
+    assert "知道連結的人可檢視" in reply  # 圖表權限提醒
+
+
+async def test_handle_text_set_command_reports_auto_created_worksheets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
+        return None
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return ["daily_log", "goals"]
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply = await dispatcher.handle_text("line:U1", "設定 sheet-new")
+
+    assert reply is not None
+    assert "已自動建立缺少的工作表：daily_log、goals" in reply
 
 
 async def test_handle_text_set_command_extracts_id_from_full_url_and_preserves_display_name(
@@ -506,7 +568,11 @@ async def test_handle_text_set_command_extracts_id_from_full_url_and_preserves_d
     async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
         upsert_calls.append((user_key, google_sheet_id, display_name))
 
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return []
+
     monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
 
     reply = await dispatcher.handle_text(
         "line:U1", "設定 https://docs.google.com/spreadsheets/d/sheet-xyz/edit#gid=0"
@@ -521,17 +587,55 @@ async def test_handle_text_set_command_rejects_wrong_argument_count(
     spy_append: list[tuple[str, str, str]],
 ):
     upsert_calls: list[tuple] = []
+    ensure_calls: list[str] = []
 
     async def _fake_upsert_user(*args, **kwargs) -> None:
         upsert_calls.append((args, kwargs))
 
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        ensure_calls.append(google_sheet_id)
+        return []
+
     monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
 
     reply = await dispatcher.handle_text("line:U1", "設定")
 
     assert spy_append == []
     assert upsert_calls == []
+    assert ensure_calls == []  # 格式驗證應先於任何 I/O
     assert reply is not None and "格式錯誤" in reply
+
+
+async def test_handle_text_set_command_reports_access_failure_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_service_account_email: str,
+):
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        raise RuntimeError("PERMISSION_DENIED")
+
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return None
+
+    upsert_calls: list[tuple] = []
+
+    async def _fake_upsert_user(*args, **kwargs) -> None:
+        upsert_calls.append((args, kwargs))
+
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定 sheet-bad")
+
+    assert get_user_calls == []  # 存取驗證失敗時不應寫入 users 工作表
+    assert upsert_calls == []
+    assert reply is not None
+    assert "無法存取" in reply
+    assert fake_service_account_email in reply
 
 
 # --- 「目標」指令 ---
@@ -580,3 +684,174 @@ async def test_handle_text_goal_command_when_no_goals_set(
     reply = await dispatcher.handle_text("line:U1", "目標")
 
     assert reply == "尚未設定每日營養目標"
+
+
+# --- 「設定目標」指令 ---
+
+
+async def test_handle_text_goal_set_command_upserts_goal(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    calls: list[tuple[str, str, object, str]] = []
+
+    async def _fake_upsert_goal(google_sheet_id: str, nutrient: str, target, unit: str) -> None:
+        calls.append((google_sheet_id, nutrient, target, unit))
+
+    monkeypatch.setattr(sheets, "upsert_goal", _fake_upsert_goal)
+
+    reply = await dispatcher.handle_text("line:U1", "設定目標 熱量 2000")
+
+    assert spy_append == []
+    assert calls == [("sheet-abc", "calories", 2000, "kcal")]
+    assert reply is not None and "2000" in reply
+
+
+async def test_handle_text_goal_set_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定目標 熱量 2000")
+
+    assert reply is not None and "綁定" in reply
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "設定目標 熱量",  # 缺少數值
+        "設定目標 卡路里 2000",  # 不支援的欄位
+        "設定目標 熱量 abc",  # 數值非數字
+    ],
+)
+async def test_handle_text_goal_set_command_rejects_invalid_input(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    text: str,
+):
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return {"google_sheet_id": "sheet-abc"}
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", text)
+
+    assert spy_append == []
+    assert get_user_calls == []  # 格式驗證應先於任何 I/O
+    assert reply is not None and reply != ""
+
+
+# --- 「連結」指令 ---
+
+
+@pytest.mark.parametrize("command", ["連結", "原始表單", "/link"])
+async def test_handle_text_link_command_returns_sheet_edit_url(
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+    command: str,
+):
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []
+    assert reply == "https://docs.google.com/spreadsheets/d/sheet-abc/edit"
+
+
+async def test_handle_text_link_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "連結")
+
+    assert reply is not None and "綁定" in reply
+
+
+# --- 指令別名與容錯 ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["today", "TODAY", " today ", "/today", "/Today@PlateScanBot"],
+)
+async def test_handle_text_today_command_accepts_english_and_slash_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+    text: str,
+):
+    async def _fake_get_daily_log_rows(google_sheet_id: str, date: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_daily_log_rows", _fake_get_daily_log_rows)
+
+    reply = await dispatcher.handle_text("line:U1", text)
+
+    assert reply is not None and "尚無" in reply
+
+
+@pytest.mark.parametrize("text", ["/ok", "/OK@PlateScanBot"])
+async def test_is_ok_command_accepts_slash_aliases(text: str):
+    assert dispatcher.is_ok_command(text) is True
+
+
+@pytest.mark.parametrize("text", ["今日 我吃了雞腿便當", "okay", "/todayish"])
+async def test_handle_text_does_not_misfire_on_lookalike_text(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    text: str,
+):
+    await dispatcher.handle_text("line:U1", text)
+
+    assert spy_append == [("line:U1", "text", text.strip())]
+
+
+async def test_handle_text_fix_alias_updates_numeric_field(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    calls: list[tuple[str, str, object]] = []
+
+    async def _fake_update(google_sheet_id: str, field: str, value):
+        calls.append((google_sheet_id, field, value))
+        return True
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+
+    reply = await dispatcher.handle_text("line:U1", "/fix 熱量 700")
+
+    assert calls == [("sheet-abc", "calories", 700)]
+    assert reply is not None and "700" in reply
+
+
+async def test_handle_text_set_alias_binds_sheet_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    upsert_calls: list[tuple[str, str, str]] = []
+
+    async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
+        upsert_calls.append((user_key, google_sheet_id, display_name))
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply = await dispatcher.handle_text("line:U1", "/set sheet-new")
+
+    assert upsert_calls == [("line:U1", "sheet-new", "")]
+    assert reply is not None and "sheet-new" in reply

@@ -18,29 +18,116 @@ from app.core import downloader, sheets, vision
 
 logger = logging.getLogger("app.core.dispatcher")
 
-OK_COMMAND = "ok"
-TODAY_COMMAND = "今日"
-CORRECT_COMMAND = "修正"
-CHART_COMMANDS = {"圖表", "分析"}
-SET_COMMAND = "設定"
-HELP_COMMAND = "說明"
-CANCEL_COMMAND = "取消"
-GOAL_COMMAND = "目標"
-
 _HELP_TEXT = (
-    "支援的指令：\n"
+    "支援的指令（中文或 / 開頭英文指令皆可，Telegram 可用選單快速輸入）：\n"
+    "新手教學（/start）→ 查看完整設定教學（首次使用推薦）\n"
     "傳送照片/文字 → 追加至當前餐次緩衝區\n"
-    "ok → 結束當前餐次，觸發辨識並寫入紀錄\n"
-    "今日 → 查詢今日累計營養素\n"
-    "圖表 / 分析 → 取得個人 PWA 儀表板連結\n"
-    "修正 熱量 700 → 修正最近一筆紀錄的數值或餐次\n"
-    "設定 {Sheet ID} → 綁定/更換個人 Google Sheet\n"
-    "取消 → 清空目前緩衝區\n"
-    "目標 → 查詢每日營養目標\n"
-    "說明 → 顯示本列表"
+    "ok（/ok）→ 結束當前餐次，觸發辨識並寫入紀錄\n"
+    "今日（/today）→ 查詢今日累計營養素\n"
+    "圖表 / 分析（/chart）→ 取得個人 PWA 儀表板連結\n"
+    "連結 / 原始表單（/link）→ 取得個人 Google Sheet 編輯連結\n"
+    "修正 熱量 700（/fix）→ 修正最近一筆紀錄的數值或餐次\n"
+    "設定 {Sheet ID}（/set）→ 綁定/更換個人 Google Sheet\n"
+    "設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
+    "目標（/goal）→ 查詢每日營養目標\n"
+    "取消（/cancel）→ 清空目前緩衝區\n"
+    "說明（/help）→ 顯示本列表"
 )
 
+_GOAL_REMINDER = (
+    "如需設定每日營養目標，可輸入「原始表單」取得 Sheet 連結，開啟後在 goals 工作表直接填寫；"
+    "或用指令「設定目標 熱量 2000」直接設定"
+)
+_CHART_PERMISSION_REMINDER = "提醒：若要使用圖表功能，請確認 Sheet 的「一般存取權」已設為「知道連結的人可檢視」"
+
 _SHEET_URL_ID_PATTERN = re.compile(r"/d/([a-zA-Z0-9_-]+)")
+
+# 不需要額外參數的指令：整則訊息（去除頭尾空白後）須完全等於下列其中一個
+# 觸發詞才會被辨識為指令，避免誤判以指令詞開頭的一般餐點描述文字
+# （例如「今日 吃了雞腿便當」應視為餐點描述，而非「今日」查詢指令）。
+# 觸發詞比對一律轉小寫，中文字不受影響、英文與 /slash 別名不分大小寫。
+_EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
+    "ok": frozenset({"ok"}),
+    "today": frozenset({"今日", "today"}),
+    "chart": frozenset({"圖表", "分析", "chart"}),
+    "link": frozenset({"連結", "原始表單", "link"}),
+    "goal_query": frozenset({"目標", "goal"}),
+    "cancel": frozenset({"取消", "cancel"}),
+    "help": frozenset({"說明", "help"}),
+    "onboarding": frozenset({"新手教學", "教學", "start"}),
+}
+
+# 需要額外參數的指令：僅比對第一個詞，其餘視為參數（例如「修正 熱量 700」）。
+# 「設定目標」須排在別名集合中優先於「設定」比對（兩者是不同的完整詞，不會互相前綴衝突）。
+_PREFIX_COMMAND_ALIASES: dict[str, frozenset[str]] = {
+    "correct": frozenset({"修正", "fix"}),
+    "goal_set": frozenset({"設定目標", "setgoal"}),
+    "set_sheet": frozenset({"設定", "set"}),
+}
+
+
+def _normalize_first_token(token: str) -> str:
+    """將指令詞正規化以提升容錯：轉小寫、去除 LINE/Telegram slash 前綴與
+    Telegram 群組指令常見的 `@BotName` 後綴（例如 `/OK@PlateScanBot` → `ok`）。
+    """
+    normalized = token.lower()
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+    at_index = normalized.find("@")
+    if at_index != -1:
+        normalized = normalized[:at_index]
+    return normalized
+
+
+def _resolve_command(stripped: str) -> tuple[Optional[str], list[str]]:
+    """解析文字訊息開頭是否符合任一指令別名，回傳 (指令代稱, 參數列表)；
+    非指令（一般餐點描述文字）時回傳 (None, [])。
+    """
+    parts = stripped.replace("　", " ").split()
+    if not parts:
+        return None, []
+
+    first = _normalize_first_token(parts[0])
+
+    if len(parts) == 1:
+        for command, triggers in _EXACT_COMMAND_ALIASES.items():
+            if first in triggers:
+                return command, []
+
+    for command, triggers in _PREFIX_COMMAND_ALIASES.items():
+        if first in triggers:
+            return command, parts[1:]
+
+    return None, []
+
+
+def is_ok_command(text: str) -> bool:
+    """供 adapter 判斷是否需在同步階段先觸發 LINE Loading Animation。"""
+    command, _ = _resolve_command(text.strip())
+    return command == "ok"
+
+
+def get_onboarding_text() -> str:
+    """新手引導文字：對應「新手教學」「教學」「start」（Telegram 首次對話自動送出）指令，
+    以及 LINE 加好友當下的 follow 事件（app/adapters/line_adapter.py）。
+
+    動態組字串是因為 Service Account Email 需在執行時從已快取的憑證讀出，
+    不額外存一份到 .env，避免兩處設定不同步。
+    """
+    email = sheets.get_service_account_email()
+    return (
+        "歡迎使用 PlateScan！設定步驟：\n"
+        "1. 建立一個新的 Google 試算表（空白即可）\n"
+        "2. 右上角「共用」，在同一個視窗完成兩件事：\n"
+        f"(1) 新增編輯者：{email}\n"
+        "(2) 把「一般存取權」改為「知道連結的任何人」＋「檢視者」（供之後使用圖表功能）\n"
+        "3. 回來這裡輸入「設定 {Sheet ID}」（可直接貼網址），Bot 會自動建立需要的工作表\n"
+        "\n"
+        "綁定後即可開始：傳照片或輸入餐點文字 → 輸入「ok」觸發辨識記錄。\n"
+        f"{_GOAL_REMINDER}。\n"
+        "輸入「說明」可查看完整指令列表。"
+    )
+
 
 _CORRECT_FIELD_ALIASES = {
     "熱量": "calories",
@@ -50,6 +137,14 @@ _CORRECT_FIELD_ALIASES = {
     "餐次": "meal",
 }
 _VALID_MEAL_NAMES = {"早餐", "午餐", "晚餐", "宵夜"}
+
+# 「設定目標 熱量 2000」的欄位別名：對應 goals 工作表 nutrient 值與預設單位。
+_GOAL_FIELD_ALIASES: dict[str, tuple[str, str]] = {
+    "熱量": ("calories", "kcal"),
+    "碳水": ("carbs", "g"),
+    "蛋白質": ("protein", "g"),
+    "脂肪": ("fat", "g"),
+}
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -91,31 +186,40 @@ async def handle_text(user_key: str, text: str) -> Optional[str]:
 async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
     """依指令分派文字訊息：`ok` 觸發辨識與寫入、`今日` 查詢累計，其餘文字視為餐點描述追加至緩衝區。"""
     stripped = text.strip()
+    command, args = _resolve_command(stripped)
 
-    if stripped.lower() == OK_COMMAND:
+    if command == "ok":
         return await _handle_ok(user_key)
 
-    if stripped == TODAY_COMMAND:
+    if command == "today":
         return await _handle_today(user_key)
 
-    if stripped in CHART_COMMANDS:
+    if command == "chart":
         return await _handle_chart(user_key)
 
-    if stripped == HELP_COMMAND:
+    if command == "link":
+        return await _handle_link(user_key)
+
+    if command == "help":
         return _HELP_TEXT
 
-    if stripped == CANCEL_COMMAND:
+    if command == "onboarding":
+        return get_onboarding_text()
+
+    if command == "cancel":
         return await _handle_cancel(user_key)
 
-    if stripped == GOAL_COMMAND:
+    if command == "goal_query":
         return await _handle_goal(user_key)
 
-    parts = stripped.split()
-    if parts and parts[0] == CORRECT_COMMAND:
-        return await _handle_correct(user_key, parts[1:])
+    if command == "goal_set":
+        return await _handle_goal_set(user_key, args)
 
-    if parts and parts[0] == SET_COMMAND:
-        return await _handle_set(user_key, parts[1:])
+    if command == "correct":
+        return await _handle_correct(user_key, args)
+
+    if command == "set_sheet":
+        return await _handle_set(user_key, args)
 
     await sheets.append_buffer_item(user_key, "text", stripped)
     return None
@@ -128,7 +232,7 @@ async def _handle_ok(user_key: str) -> Optional[str]:
 
     if not photo_ids and not captions:
         logger.info("user_key=%s 觸發 ok 指令，但緩衝區為空，略過辨識", user_key)
-        return None
+        return "緩衝區是空的，請先傳照片或輸入餐點描述"
 
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
@@ -210,7 +314,20 @@ async def _handle_chart(user_key: str) -> str:
         logger.warning("WEB_BASE_URL 尚未設定，無法組出 PWA 儀表板連結")
         return "PWA 儀表板尚未部署，請聯絡管理員"
 
-    return f"{settings.web_base_url}/?sheet_id={user['google_sheet_id']}"
+    link = f"{settings.web_base_url}/?sheet_id={user['google_sheet_id']}"
+    return (
+        f"{link}\n"
+        "若圖表顯示不出資料，請確認 Sheet 的「一般存取權」已設為「知道連結的人可檢視」"
+        "（在 Google Sheets 右上角「共用」視窗設定）"
+    )
+
+
+async def _handle_link(user_key: str) -> str:
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+
+    return f"https://docs.google.com/spreadsheets/d/{user['google_sheet_id']}/edit"
 
 
 async def _handle_correct(user_key: str, args: list[str]) -> str:
@@ -260,11 +377,30 @@ async def _handle_set(user_key: str, args: list[str]) -> str:
         return "指令格式錯誤，請使用「設定 {Sheet ID}」（可直接貼 Google Sheets 網址）"
 
     google_sheet_id = _extract_sheet_id(args[0])
+
+    try:
+        created = await sheets.ensure_user_worksheets(google_sheet_id)
+    except Exception as exc:
+        logger.warning("user_key=%s 設定 Sheet ID=%s 存取失敗：%s", user_key, google_sheet_id, exc)
+        email = sheets.get_service_account_email()
+        return (
+            "無法存取這個 Google Sheet，請確認：\n"
+            "1. Sheet ID／網址正確\n"
+            f"2. 已將此 Sheet 分享給 {email}（權限選「編輯者」）\n"
+            "完成後請重新輸入一次「設定 {Sheet ID}」"
+        )
+
     existing_user = await sheets.get_user(user_key)
     display_name = existing_user["display_name"] if existing_user else ""
 
     await sheets.upsert_user(user_key, google_sheet_id=google_sheet_id, display_name=display_name)
-    return f"已綁定個人 Google Sheet（{google_sheet_id}）"
+
+    lines = [f"已綁定個人 Google Sheet（{google_sheet_id}）"]
+    if created:
+        lines.append(f"已自動建立缺少的工作表：{'、'.join(created)}")
+    lines.append(_GOAL_REMINDER)
+    lines.append(_CHART_PERMISSION_REMINDER)
+    return "\n".join(lines)
 
 
 async def _handle_cancel(user_key: str) -> str:
@@ -283,3 +419,29 @@ async def _handle_goal(user_key: str) -> str:
 
     lines = [f"{goal['nutrient']} {goal['target']}{goal['unit']}" for goal in goals]
     return "每日營養目標：\n" + "\n".join(lines)
+
+
+async def _handle_goal_set(user_key: str, args: list[str]) -> str:
+    if len(args) != 2:
+        return "指令格式錯誤，請使用「設定目標 熱量 2000」，可用欄位：熱量、碳水、蛋白質、脂肪"
+
+    field_label, raw_value = args
+    field_info = _GOAL_FIELD_ALIASES.get(field_label)
+    if field_info is None:
+        return f"不支援的欄位「{field_label}」，可用欄位：熱量、碳水、蛋白質、脂肪"
+
+    nutrient, unit = field_info
+    try:
+        target: Any = int(raw_value)
+    except ValueError:
+        try:
+            target = float(raw_value)
+        except ValueError:
+            return f"「{field_label}」需要輸入數字，例如「設定目標 {field_label} 2000」"
+
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+
+    await sheets.upsert_goal(user["google_sheet_id"], nutrient, target, unit)
+    return f"已將每日{field_label}目標設定為 {target}{unit}"
