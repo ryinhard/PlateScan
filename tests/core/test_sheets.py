@@ -351,3 +351,31 @@ async def test_update_latest_daily_log_field_returns_false_when_no_records(
     updated = await sheets.update_latest_daily_log_field("sheet-abc", "calories", 700)
 
     assert updated is False
+
+
+# --- goals 工作表（使用者個人 Sheet） ---
+
+
+@pytest.fixture()
+def fake_goals_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWorksheet:
+    ws = FakeWorksheet(["nutrient", "target", "unit"])
+    monkeypatch.setattr(sheets, "_get_user_worksheet", lambda google_sheet_id, name: ws)
+    return ws
+
+
+async def test_get_goals_parses_all_rows(fake_goals_ws: FakeWorksheet):
+    fake_goals_ws.rows.append(["calories", "2000", "kcal"])
+    fake_goals_ws.rows.append(["protein", "120", "g"])
+
+    goals = await sheets.get_goals("sheet-abc")
+
+    assert goals == [
+        {"nutrient": "calories", "target": "2000", "unit": "kcal"},
+        {"nutrient": "protein", "target": "120", "unit": "g"},
+    ]
+
+
+async def test_get_goals_returns_empty_list_when_no_rows(fake_goals_ws: FakeWorksheet):
+    goals = await sheets.get_goals("sheet-abc")
+
+    assert goals == []

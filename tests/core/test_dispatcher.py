@@ -437,3 +437,146 @@ async def test_handle_text_returns_fallback_reply_when_unexpected_error_occurs(
     reply = await dispatcher.handle_text("line:U1", "ok")
 
     assert reply == "處理時發生錯誤，請稍後再試一次"
+
+
+# --- 「說明」指令 ---
+
+
+async def test_handle_text_help_command_returns_static_command_list(
+    spy_append: list[tuple[str, str, str]],
+):
+    reply = await dispatcher.handle_text("line:U1", "說明")
+
+    assert spy_append == []  # 「說明」不應被當成一般文字暫存
+    assert reply is not None and "ok" in reply and "設定" in reply
+
+
+# --- 「取消」指令 ---
+
+
+async def test_handle_text_cancel_command_clears_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+):
+    clear_calls: list[str] = []
+
+    async def _fake_clear_buffer(user_key: str) -> None:
+        clear_calls.append(user_key)
+
+    monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
+
+    reply = await dispatcher.handle_text("line:U1", "取消")
+
+    assert spy_append == []
+    assert clear_calls == ["line:U1"]
+    assert reply is not None and "清空" in reply
+
+
+# --- 「設定」指令 ---
+
+
+async def test_handle_text_set_command_binds_new_sheet_id(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    upsert_calls: list[tuple[str, str, str]] = []
+
+    async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
+        upsert_calls.append((user_key, google_sheet_id, display_name))
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定 sheet-new")
+
+    assert spy_append == []
+    assert upsert_calls == [("line:U1", "sheet-new", "")]
+    assert reply is not None and "sheet-new" in reply
+
+
+async def test_handle_text_set_command_extracts_id_from_full_url_and_preserves_display_name(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    upsert_calls: list[tuple[str, str, str]] = []
+
+    async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
+        upsert_calls.append((user_key, google_sheet_id, display_name))
+
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+
+    reply = await dispatcher.handle_text(
+        "line:U1", "設定 https://docs.google.com/spreadsheets/d/sheet-xyz/edit#gid=0"
+    )
+
+    assert upsert_calls == [("line:U1", "sheet-xyz", "小明")]  # fake_user 的既有 display_name 不被清空
+    assert reply is not None and "sheet-xyz" in reply
+
+
+async def test_handle_text_set_command_rejects_wrong_argument_count(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+):
+    upsert_calls: list[tuple] = []
+
+    async def _fake_upsert_user(*args, **kwargs) -> None:
+        upsert_calls.append((args, kwargs))
+
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定")
+
+    assert spy_append == []
+    assert upsert_calls == []
+    assert reply is not None and "格式錯誤" in reply
+
+
+# --- 「目標」指令 ---
+
+
+async def test_handle_text_goal_command_returns_formatted_goal_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    async def _fake_get_goals(google_sheet_id: str):
+        assert google_sheet_id == "sheet-abc"
+        return [
+            {"nutrient": "calories", "target": "2000", "unit": "kcal"},
+            {"nutrient": "protein", "target": "120", "unit": "g"},
+        ]
+
+    monkeypatch.setattr(sheets, "get_goals", _fake_get_goals)
+
+    reply = await dispatcher.handle_text("line:U1", "目標")
+
+    assert reply == "每日營養目標：\ncalories 2000kcal\nprotein 120g"
+
+
+async def test_handle_text_goal_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "目標")
+
+    assert reply is not None and "綁定" in reply
+
+
+async def test_handle_text_goal_command_when_no_goals_set(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    async def _fake_get_goals(google_sheet_id: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_goals", _fake_get_goals)
+
+    reply = await dispatcher.handle_text("line:U1", "目標")
+
+    assert reply == "尚未設定每日營養目標"

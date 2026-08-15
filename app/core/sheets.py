@@ -24,6 +24,7 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 USERS_WORKSHEET = "users"
 BUFFER_WORKSHEET = "buffer"
 DAILY_LOG_WORKSHEET = "daily_log"
+GOALS_WORKSHEET = "goals"
 
 
 @functools.lru_cache(maxsize=1)
@@ -283,3 +284,28 @@ async def update_latest_daily_log_field(google_sheet_id: str, field: str, value:
     lock = await _get_lock(google_sheet_id)
     async with lock:
         return await asyncio.to_thread(_write)
+
+
+# --- goals 工作表（使用者個人 Sheet）：nutrient | target | unit ---
+# 目前僅供 PWA 讀取顯示達成率；「目標」指令（app/core/dispatcher.py）另外查詢此工作表回傳文字彙整。
+
+
+def _row_to_goal(row: list[str]) -> dict[str, Any]:
+    return {
+        "nutrient": row[0] if len(row) > 0 else "",
+        "target": row[1] if len(row) > 1 else "",
+        "unit": row[2] if len(row) > 2 else "",
+    }
+
+
+async def get_goals(google_sheet_id: str) -> list[dict[str, Any]]:
+    """讀取使用者個人 Sheet 的 goals 工作表所有列（nutrient/target/unit）。"""
+
+    def _read() -> list[dict[str, Any]]:
+        worksheet = _get_user_worksheet(google_sheet_id, GOALS_WORKSHEET)
+        rows = worksheet.get_all_values()[1:]
+        return [_row_to_goal(row) for row in rows if row and row[0]]
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        return await asyncio.to_thread(_read)
