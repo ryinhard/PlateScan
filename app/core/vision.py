@@ -1,4 +1,4 @@
-"""Gemini Vision 多模態辨識模組（對應 DESIGN-v6.md 架構圖 Gemini 1.5 Flash 節點）。
+"""Gemini Vision 多模態辨識模組（對應 docs/architecture.md 架構圖 Gemini 節點）。
 
 輸入使用者暫存的照片二進位內容與文字描述，呼叫 Gemini 產生結構化的
 餐點品項與營養素估算結果，供 M5 寫入使用者專屬 Sheet 的 daily_log 使用。

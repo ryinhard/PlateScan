@@ -1,4 +1,4 @@
-"""平行下載照片模組（對應 DESIGN-v6.md 5.1：asyncio.gather 多圖平行下載）。
+"""平行下載照片模組（對應 docs/architecture.md 第 4 節：asyncio.gather 多圖平行下載）。
 
 LINE 以 message_id 透過 Content API 取得圖片二進位內容；
 Telegram 以 file_id 先呼叫 getFile 取得 file_path，再組合下載網址取得內容。

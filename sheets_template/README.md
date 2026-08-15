@@ -1,6 +1,6 @@
 # Google Sheet 範例檔
 
-對應 [DESIGN-v6.md](../DESIGN-v6.md) 第 3、7 節的資料結構，供實際部署時建立雲端 Sheet，或作為 GitHub 公開的欄位範例。
+對應 [docs/data-schema.md](../docs/data-schema.md) 的資料結構，供實際部署時建立雲端 Sheet，或作為 GitHub 公開的欄位範例。
 
 | 檔案 | 對應用途 | 內含工作表 |
 |---|---|---|

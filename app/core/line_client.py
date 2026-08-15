@@ -1,4 +1,4 @@
-"""LINE Messaging API 客戶端（對應 DESIGN-v6.md 5.1：Loading Animation / Reply / Push）。
+"""LINE Messaging API 客戶端（對應 docs/architecture.md 第 5 節：Loading Animation / Reply / Push）。
 
 僅封裝 Display Loading Animation、Reply Message（0 成本）、Push Message（降級 fallback，
 計入額度）三支 API 呼叫，實際依處理耗時決定使用哪一支交由 app.adapters.line_adapter 判斷。

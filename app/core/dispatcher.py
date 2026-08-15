@@ -1,4 +1,4 @@
-"""Core Handler：訊息與指令分發（對應 DESIGN-v6.md 系統架構圖的 Core Handler 層）。
+"""Core Handler：訊息與指令分發（對應 docs/architecture.md 系統架構圖的 Core Handler 層）。
 
 LINE / Telegram adapter 皆呼叫本模組的 handle_photo() / handle_text()，
 統一轉換為 app.core.sheets 的 buffer / daily_log 讀寫操作，避免兩個 adapter
