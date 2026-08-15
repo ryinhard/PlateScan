@@ -12,13 +12,12 @@ import logging
 from typing import Any
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from app.config import settings
 
 logger = logging.getLogger("app.core.vision")
-
-_MODEL_NAME = "gemini-flash-latest"
 
 _PROMPT = """你是專業營養師。請分析以下餐點照片與文字描述，估算每個食物品項的營養素。
 
@@ -60,16 +59,29 @@ def _parse_response(text: str) -> list[dict[str, Any]]:
 
 
 async def analyze_meal(images: list[bytes], captions: list[str]) -> list[dict[str, Any]]:
-    """呼叫 Gemini Vision 辨識餐點照片與文字描述，回傳結構化品項清單。"""
+    """呼叫 Gemini Vision 辨識餐點照片與文字描述，回傳結構化品項清單。
+
+    主要模型（settings.gemini_model）回傳 503（服務過載）時，自動改用
+    settings.gemini_fallback_model 重試一次，避免單一模型撞尖峰流量導致整次辨識失敗。
+    """
     if not images and not captions:
         return []
 
-    def _generate() -> str:
+    contents = _build_contents(images, captions)
+
+    def _generate(model_name: str) -> str:
         client = _get_client()
-        response = client.models.generate_content(
-            model=_MODEL_NAME, contents=_build_contents(images, captions)
-        )
+        response = client.models.generate_content(model=model_name, contents=contents)
         return response.text
 
-    text = await asyncio.to_thread(_generate)
+    try:
+        text = await asyncio.to_thread(_generate, settings.gemini_model)
+    except genai_errors.ServerError:
+        if not settings.gemini_fallback_model or settings.gemini_fallback_model == settings.gemini_model:
+            raise
+        logger.warning(
+            "主模型 %s 回應 503，改用備用模型 %s 重試", settings.gemini_model, settings.gemini_fallback_model
+        )
+        text = await asyncio.to_thread(_generate, settings.gemini_fallback_model)
+
     return _parse_response(text)

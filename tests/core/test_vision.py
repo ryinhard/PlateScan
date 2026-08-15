@@ -1,10 +1,12 @@
-"""app.core.vision 單元測試：JSON 回應解析與空輸入短路邏輯。
+"""app.core.vision 單元測試：JSON 回應解析、空輸入短路邏輯與備用模型降級。
 
 以 monkeypatch 替換 _get_client()，不實際呼叫 Gemini API。
 """
 
 import pytest
+from google.genai import errors as genai_errors
 
+from app.config import settings
 from app.core import vision
 
 
@@ -26,6 +28,41 @@ class _FakeModels:
 class _FakeClient:
     def __init__(self, text: str) -> None:
         self.models = _FakeModels(text)
+
+
+def _server_error() -> genai_errors.ServerError:
+    return genai_errors.ServerError(
+        503, {"error": {"message": "This model is currently experiencing high demand."}}
+    )
+
+
+class _FlakyPrimaryModels:
+    """主模型第一次呼叫回傳 503，其餘模型正常回應。"""
+
+    def __init__(self, fallback_text: str) -> None:
+        self._fallback_text = fallback_text
+        self.received_models: list[str] = []
+
+    def generate_content(self, model: str, contents: list):
+        self.received_models.append(model)
+        if model == settings.gemini_model:
+            raise _server_error()
+        return _FakeResponse(self._fallback_text)
+
+
+class _FlakyPrimaryClient:
+    def __init__(self, fallback_text: str) -> None:
+        self.models = _FlakyPrimaryModels(fallback_text)
+
+
+class _AlwaysServerErrorModels:
+    def generate_content(self, model: str, contents: list):
+        raise _server_error()
+
+
+class _AlwaysServerErrorClient:
+    def __init__(self) -> None:
+        self.models = _AlwaysServerErrorModels()
 
 
 async def test_analyze_meal_returns_empty_list_when_no_input():
@@ -62,3 +99,32 @@ async def test_analyze_meal_returns_empty_list_on_invalid_json(monkeypatch: pyte
     result = await vision.analyze_meal([b"fake-image"], [])
 
     assert result == []
+
+
+async def test_analyze_meal_falls_back_to_secondary_model_on_503(monkeypatch: pytest.MonkeyPatch):
+    fake_client = _FlakyPrimaryClient(
+        '[{"name": "炒飯", "calories": 600, "carbs_g": 90, "protein_g": 15, "fat_g": 18}]'
+    )
+    monkeypatch.setattr(vision, "_get_client", lambda: fake_client)
+
+    result = await vision.analyze_meal([b"fake-image"], [])
+
+    assert result == [{"name": "炒飯", "calories": 600, "carbs_g": 90, "protein_g": 15, "fat_g": 18}]
+    assert fake_client.models.received_models == [settings.gemini_model, settings.gemini_fallback_model]
+
+
+async def test_analyze_meal_raises_when_fallback_model_also_fails(monkeypatch: pytest.MonkeyPatch):
+    fake_client = _AlwaysServerErrorClient()
+    monkeypatch.setattr(vision, "_get_client", lambda: fake_client)
+
+    with pytest.raises(genai_errors.ServerError):
+        await vision.analyze_meal([b"fake-image"], [])
+
+
+async def test_analyze_meal_reraises_when_no_fallback_configured(monkeypatch: pytest.MonkeyPatch):
+    fake_client = _AlwaysServerErrorClient()
+    monkeypatch.setattr(vision, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(settings, "gemini_fallback_model", settings.gemini_model)
+
+    with pytest.raises(genai_errors.ServerError):
+        await vision.analyze_meal([b"fake-image"], [])

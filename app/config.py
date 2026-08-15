@@ -26,6 +26,9 @@ class Settings(BaseSettings):
 
     # M4（Gemini Vision 解析）使用
     gemini_api_key: Optional[str] = None
+    # 主要辨識模型；遇 503（服務過載）時自動改用 gemini_fallback_model 重試一次
+    gemini_model: str = "gemini-flash-latest"
+    gemini_fallback_model: str = "gemini-2.5-flash-lite"
 
     # M2/M5（Google Sheets 讀寫）使用。
     # 注意：此變數同時也會被 Google client library（google-auth 等）隱性自動讀取，
