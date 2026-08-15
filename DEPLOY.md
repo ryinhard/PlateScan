@@ -17,6 +17,26 @@ gcloud config set project <YOUR_PROJECT_ID>
 gcloud services enable run.googleapis.com secretmanager.googleapis.com
 ```
 
+### 新專案首次部署常見卡點：Compute 預設服務帳號權限不足
+
+新建立的 GCP 專案執行 `gcloud run deploy --source .` 時，即使 Compute Engine 預設服務帳號（`<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`）已有專案層級 `roles/editor`，Cloud Build 上傳原始碼時仍可能回傳：
+
+```
+ERROR: (gcloud.run.deploy) PERMISSION_DENIED: Build failed because the default service account is missing required IAM permissions. ...
+could not resolve source: ... IAM permission denied for service account <PROJECT_NUMBER>-compute@developer.gserviceaccount.com
+```
+
+實測 `roles/cloudbuild.builds.builder` 不足以解決，需額外授予 **Cloud Run Builder**（`roles/run.builder`）角色：
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe <YOUR_PROJECT_ID> --format="value(projectNumber)")
+gcloud projects add-iam-policy-binding <YOUR_PROJECT_ID> \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/run.builder"
+```
+
+授權後可能需等待數十秒到數分鐘才會生效，再重新執行 `gcloud run deploy`。
+
 ## 憑證管理：Secret Manager 掛載檔案
 
 `app/core/sheets.py` 目前以 `GOOGLE_APPLICATION_CREDENTIALS` 指向的檔案路徑讀取 service account 憑證（`Credentials.from_service_account_file()`），**程式碼不需修改**。Cloud Run 上改以 Secret Manager 掛載檔案的方式帶入：
@@ -45,11 +65,10 @@ gcloud run deploy platescan \
   --region asia-east1 \
   --allow-unauthenticated \
   --set-secrets="/secrets/service-account.json=sheets-service-account:latest" \
-  --set-env-vars="GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json,ADMIN_SHEET_ID=<...>,WEB_BASE_URL=<GitHub Pages 網址>" \
-  --set-env-vars="LINE_CHANNEL_SECRET=<...>,LINE_CHANNEL_ACCESS_TOKEN=<...>,TELEGRAM_BOT_TOKEN=<...>,TELEGRAM_WEBHOOK_SECRET=<...>,GEMINI_API_KEY=<...>"
+  --set-env-vars="GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json,ADMIN_SHEET_ID=<...>,WEB_BASE_URL=<GitHub Pages 網址>,LINE_CHANNEL_SECRET=<...>,LINE_CHANNEL_ACCESS_TOKEN=<...>,TELEGRAM_BOT_TOKEN=<...>,TELEGRAM_WEBHOOK_SECRET=<...>,GEMINI_API_KEY=<...>"
 ```
 
-> `--set-env-vars` 分兩行是因為同一個 flag 內用逗號分隔多組 KEY=VALUE，若值本身含有逗號需改用 `--set-env-vars=^;^KEY=VALUE;...` 的自訂分隔字元語法，屆時視實際金鑰內容調整。
+> `--set-env-vars` 每次呼叫會整批覆蓋現有環境變數，**同一條指令內不可重複使用這個 flag**（不會合併，只有最後一次生效／或直接報錯），所有 KEY=VALUE 必須合併在同一個字串內、以逗號分隔。若某個值本身含有逗號，需改用 `--set-env-vars=^;^KEY=VALUE;...` 的自訂分隔字元語法。
 
 部署完成後會得到一個 `https://platescan-xxxxx-xx.a.run.app` 形式的公開網址，記錄下來供下一步註冊 Webhook 使用。
 
