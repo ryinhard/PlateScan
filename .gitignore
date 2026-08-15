@@ -26,6 +26,7 @@ Thumbs.db
 # 內部進度／開發規範文件（含真實測試用個資與 GCP 專案資訊，不公開）
 TODO.md
 CLAUDE.md
+NOTES.md
 
 # scripts/setup_line_richmenu.py --dry-run 產生的本機預覽圖，非版控內容
 scripts/richmenu_preview.png
