@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nutrition-dashboard-v2';
+const CACHE_NAME = 'platescan-dashboard-v3';
 const ASSETS = [
   '.',
   'index.html',

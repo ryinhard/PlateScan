@@ -1,7 +1,7 @@
 {
-  "name": "每日營養儀表板",
-  "short_name": "營養儀表板",
-  "description": "追蹤每日營養攝取，自動比對目標，提供日/週/月視覺化圖表",
+  "name": "PlateScan 營養儀表板",
+  "short_name": "PlateScan",
+  "description": "PlateScan：追蹤每日營養攝取，自動比對目標，提供日/週/月視覺化圖表",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#f0f2f5",

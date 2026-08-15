@@ -22,3 +22,7 @@ Thumbs.db
 
 # 本機開發用日誌（可能含 Bot Token 等機密於請求網址中，禁止提交）
 *.log
+
+# 內部進度／開發規範文件（含真實測試用個資與 GCP 專案資訊，不公開）
+TODO.md
+CLAUDE.md

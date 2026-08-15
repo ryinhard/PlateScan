@@ -1,4 +1,4 @@
-# 營養素擷取與視覺化系統 - 系統設計 (v6.0 雙平台、PWA 圖表整合與 0 成本架構)
+# PlateScan - 系統設計 (v6.0 雙平台、PWA 圖表整合與 0 成本架構)
 
 ## 1. 專案目標
 
@@ -154,7 +154,7 @@ Bot 與 PWA 統一使用以下工作表結構，確保前後端讀寫完全一�
 ## 8. 專案整體目錄結構
 
 ```
-nutrition-extractor/
+PlateScan/
 ├── app/                      # 👈 後端 API 與 Bot (Cloud Run)
 │   ├── main.py               # FastAPI 入口 (LINE & TG Webhook Routes)
 │   ├── adapters/             # 平台轉接層 (LINE / TG)
