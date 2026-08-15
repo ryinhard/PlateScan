@@ -19,11 +19,12 @@ Bot 與 PWA 統一使用以下 Google Sheet 工作表結構，確保前後端讀
 
 ### `daily_log` 工作表
 
-| A: date | B: meal | C: items | D: calories | E: carbs_g | F: protein_g | G: fat_g |
-|---|---|---|---|---|---|---|
-| 2026/08/14 | 午餐 | 雞腿便當, 味噌湯 | 650 | 80 | 30 | 20 |
+| A: date | B: meal | C: items | D: calories | E: carbs_g | F: protein_g | G: fat_g | H: confidence |
+|---|---|---|---|---|---|---|---|
+| 2026/08/14 | 午餐 | 雞腿便當, 味噌湯 | 650 | 80 | 30 | 20 | 0.85 |
 
 > 日期格式統一採用 `YYYY/MM/DD`，相容 PWA `parseDate()` 自動解析。
+> `confidence`（0.0~1.0）為 Gemini 回傳的 `confidence_score`，目前僅記錄供之後觀察分佈使用，尚無任何依此欄位觸發的行為（例如信心度過低時切換更高階模型重算）；PWA 目前不讀取此欄位，僅供 Bot 端寫入與未來擴充。
 
 ### `goals` 工作表（每日營養目標）
 

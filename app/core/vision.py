@@ -9,7 +9,7 @@ import asyncio
 import functools
 import json
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -19,12 +19,40 @@ from app.config import settings
 
 logger = logging.getLogger("app.core.vision")
 
-_PROMPT = """你是專業營養師。請分析以下餐點照片與文字描述，估算每個食物品項的營養素。
+_PROMPT = """你是一位專業臨床營養師，請依序執行以下步驟分析餐點照片與文字描述：
 
-僅回傳一個 JSON 陣列（不要有任何額外文字或 Markdown 標記），每個元素格式為：
-{"name": "食物名稱", "calories": 數字, "carbs_g": 數字, "protein_g": 數字, "fat_g": 數字}
+1. 品項拆解：列出照片中所有可見的食物品項。
+2. 烹調與醬料評估：判斷烹調方式（清蒸、水煮、煎炸、勾芡等）。若為快炒或炸物，須將隱藏油脂計入 fat_g（不要低估）。
+3. 份量估計：以常見容器（碗、盤、掌心）大小為基準，推估每個品項的重量。
+4. 營養計算：依品項與份量分別估算 calories/carbs_g/protein_g/fat_g。
 
-若完全無法辨識出任何食物，回傳空陣列 []。"""
+若使用者有提供文字描述（例如「半碗飯」「不加糖」），該描述以使用者輸入為準，優先於單純視覺估計。
+
+僅回傳符合指定 schema 的 JSON，cot_reasoning 欄位請用繁體中文簡短說明（1-2 句）烹調方式與估重依據。
+若完全無法從照片與文字中辨識出任何食物，items 回傳空陣列 []。"""
+
+_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "cot_reasoning": {"type": "STRING"},
+        "confidence_score": {"type": "NUMBER"},
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "name": {"type": "STRING"},
+                    "calories": {"type": "INTEGER"},
+                    "carbs_g": {"type": "INTEGER"},
+                    "protein_g": {"type": "INTEGER"},
+                    "fat_g": {"type": "INTEGER"},
+                },
+                "required": ["name", "calories", "carbs_g", "protein_g", "fat_g"],
+            },
+        },
+    },
+    "required": ["cot_reasoning", "confidence_score", "items"],
+}
 
 
 @functools.lru_cache(maxsize=1)
@@ -42,36 +70,43 @@ def _build_contents(images: list[bytes], captions: list[str]) -> list[Any]:
     return contents
 
 
-def _parse_response(text: str) -> list[dict[str, Any]]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if "\n" in cleaned:
-            cleaned = cleaned.split("\n", 1)[1]
-
+def _parse_response(text: str) -> Optional[dict[str, Any]]:
     try:
-        parsed = json.loads(cleaned)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         logger.warning("Gemini 回傳內容非合法 JSON，視為辨識失敗：%s", text)
-        return []
+        return None
 
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, dict) or not parsed.get("items"):
+        return None
+
+    return parsed
 
 
-async def analyze_meal(images: list[bytes], captions: list[str]) -> list[dict[str, Any]]:
-    """呼叫 Gemini Vision 辨識餐點照片與文字描述，回傳結構化品項清單。
+async def analyze_meal(images: list[bytes], captions: list[str]) -> Optional[dict[str, Any]]:
+    """呼叫 Gemini Vision 辨識餐點照片與文字描述。
+
+    回傳 {"cot_reasoning": str, "confidence_score": float, "items": [{"name", "calories",
+    "carbs_g", "protein_g", "fat_g"}, ...]}；完全無法辨識出食物時回傳 None。
+    最終的營養素加總刻意留給呼叫端（app/core/dispatcher.py）用 sum() 計算，
+    不假手 Gemini 做多位數加總——圖像辨識與烹調方式判斷才是模型該做的事，
+    確定性運算交給 Python 保證正確。
 
     主要模型（settings.gemini_model）回傳 503（服務過載）時，自動改用
     settings.gemini_fallback_model 重試一次，避免單一模型撞尖峰流量導致整次辨識失敗。
     """
     if not images and not captions:
-        return []
+        return None
 
     contents = _build_contents(images, captions)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_RESPONSE_SCHEMA,
+    )
 
     def _generate(model_name: str) -> str:
         client = _get_client()
-        response = client.models.generate_content(model=model_name, contents=contents)
+        response = client.models.generate_content(model=model_name, contents=contents, config=config)
         return response.text
 
     try:

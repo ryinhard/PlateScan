@@ -111,24 +111,33 @@ async def _handle_ok(user_key: str) -> Optional[str]:
         len(photo_ids),
         len(images),
         len(captions),
-        len(result),
+        len(result["items"]) if result else 0,
     )
+    if result:
+        logger.info(
+            "user_key=%s Gemini cot_reasoning=%s confidence_score=%s",
+            user_key,
+            result.get("cot_reasoning"),
+            result.get("confidence_score"),
+        )
 
     if not result:
         await sheets.clear_buffer(user_key)
         return "無法辨識出餐點內容，請重新拍照或加上文字描述後再試一次"
 
+    result_items = result["items"]
     now = datetime.now(_TAIPEI_TZ)
     date = now.strftime("%Y/%m/%d")
     meal = _determine_meal(now)
-    item_names = "、".join(item.get("name", "") for item in result)
-    calories = sum(item.get("calories", 0) for item in result)
-    carbs_g = sum(item.get("carbs_g", 0) for item in result)
-    protein_g = sum(item.get("protein_g", 0) for item in result)
-    fat_g = sum(item.get("fat_g", 0) for item in result)
+    item_names = "、".join(item.get("name", "") for item in result_items)
+    calories = sum(item.get("calories", 0) for item in result_items)
+    carbs_g = sum(item.get("carbs_g", 0) for item in result_items)
+    protein_g = sum(item.get("protein_g", 0) for item in result_items)
+    fat_g = sum(item.get("fat_g", 0) for item in result_items)
+    confidence = result.get("confidence_score", 0)
 
     await sheets.append_daily_log(
-        user["google_sheet_id"], date, meal, item_names, calories, carbs_g, protein_g, fat_g
+        user["google_sheet_id"], date, meal, item_names, calories, carbs_g, protein_g, fat_g, confidence
     )
     await sheets.clear_buffer(user_key)
 

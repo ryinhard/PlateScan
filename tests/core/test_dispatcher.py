@@ -80,10 +80,18 @@ async def test_handle_text_ok_command_downloads_photos_and_calls_gemini(
 
     async def _fake_analyze_meal(images: list[bytes], captions: list[str]):
         analyze_calls.append((images, captions))
-        return [{"name": "雞腿便當", "calories": 650, "carbs_g": 80, "protein_g": 30, "fat_g": 20}]
+        return {
+            "cot_reasoning": "便當為現成組合餐",
+            "confidence_score": 0.85,
+            "items": [{"name": "雞腿便當", "calories": 650, "carbs_g": 80, "protein_g": 30, "fat_g": 20}],
+        }
 
-    async def _fake_append_daily_log(google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g):
-        append_log_calls.append((google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g))
+    async def _fake_append_daily_log(
+        google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g, confidence=0
+    ):
+        append_log_calls.append(
+            (google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g, confidence)
+        )
 
     monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
     monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
@@ -100,10 +108,11 @@ async def test_handle_text_ok_command_downloads_photos_and_calls_gemini(
     assert clear_calls == ["line:U1"]  # 寫入 daily_log 成功後應清空緩衝區
 
     assert len(append_log_calls) == 1
-    google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g = append_log_calls[0]
+    google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g, confidence = append_log_calls[0]
     assert google_sheet_id == "sheet-abc"
     assert items == "雞腿便當"
     assert (calories, carbs_g, protein_g, fat_g) == (650, 80, 30, 20)
+    assert confidence == 0.85
     assert meal in {"早餐", "午餐", "晚餐", "宵夜"}
 
     assert reply is not None
@@ -154,7 +163,7 @@ async def test_handle_text_ok_command_clears_buffer_when_recognition_empty(
         return []
 
     async def _fake_analyze_meal(images: list[bytes], captions: list[str]):
-        return []
+        return None
 
     monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
     monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
@@ -183,7 +192,7 @@ async def test_handle_text_ok_command_skips_recognition_when_buffer_empty(
 
     async def _fake_analyze_meal(images: list[bytes], captions: list[str]):
         analyze_calls.append((images, captions))
-        return []
+        return None
 
     monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
     monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)

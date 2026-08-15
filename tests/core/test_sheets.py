@@ -271,19 +271,28 @@ async def test_append_daily_log_writes_row_in_expected_column_order(
     fake_daily_log_ws: FakeWorksheet,
 ):
     await sheets.append_daily_log(
-        "sheet-abc", "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20
+        "sheet-abc", "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20, 0.85
     )
 
     assert fake_daily_log_ws.rows[1] == [
-        "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20
+        "2026/08/15", "午餐", "雞腿便當、味噌湯", 650, 80, 30, 20, 0.85
     ]
+
+
+async def test_append_daily_log_defaults_confidence_to_zero_when_omitted(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    await sheets.append_daily_log("sheet-abc", "2026/08/15", "午餐", "雞腿便當", 650, 80, 30, 20)
+
+    assert fake_daily_log_ws.rows[1][7] == 0
 
 
 async def test_get_daily_log_rows_filters_by_date_and_parses_numbers(
     fake_daily_log_ws: FakeWorksheet,
 ):
-    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22"])
-    fake_daily_log_ws.rows.append(["2026/08/15", "早餐", "蛋餅", "400", "45", "15", "18"])
+    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22", "0.8"])
+    fake_daily_log_ws.rows.append(["2026/08/15", "早餐", "蛋餅", "400", "45", "15", "18", "0.9"])
+    # 舊資料列（升級前寫入，沒有 confidence 欄位）也應能正常解析，缺值視為 0
     fake_daily_log_ws.rows.append(["2026/08/15", "午餐", "雞腿便當", "650", "80", "30", "20"])
 
     rows = await sheets.get_daily_log_rows("sheet-abc", "2026/08/15")
@@ -297,7 +306,9 @@ async def test_get_daily_log_rows_filters_by_date_and_parses_numbers(
         "carbs_g": 45.0,
         "protein_g": 15.0,
         "fat_g": 18.0,
+        "confidence": 0.9,
     }
+    assert rows[1]["confidence"] == 0.0
 
 
 async def test_get_daily_log_rows_returns_empty_list_when_no_match(

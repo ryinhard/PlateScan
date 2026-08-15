@@ -210,6 +210,7 @@ def _row_to_daily_log(row: list[str]) -> dict[str, Any]:
         "carbs_g": _to_number(row[4] if len(row) > 4 else ""),
         "protein_g": _to_number(row[5] if len(row) > 5 else ""),
         "fat_g": _to_number(row[6] if len(row) > 6 else ""),
+        "confidence": _to_number(row[7] if len(row) > 7 else ""),
     }
 
 
@@ -222,12 +223,17 @@ async def append_daily_log(
     carbs_g: float,
     protein_g: float,
     fat_g: float,
+    confidence: float = 0,
 ) -> None:
-    """將一筆彙整後的餐次紀錄寫入使用者個人 Sheet 的 daily_log 工作表。"""
+    """將一筆彙整後的餐次紀錄寫入使用者個人 Sheet 的 daily_log 工作表。
+
+    confidence 為 Gemini 回傳的 confidence_score（0.0~1.0），供之後觀察辨識信心度
+    分佈、評估是否需要在信心度過低時切換更高階模型重算使用，目前僅記錄不觸發任何行為。
+    """
 
     def _write() -> None:
         worksheet = _get_user_worksheet(google_sheet_id, DAILY_LOG_WORKSHEET)
-        worksheet.append_row([date, meal, items, calories, carbs_g, protein_g, fat_g])
+        worksheet.append_row([date, meal, items, calories, carbs_g, protein_g, fat_g, confidence])
 
     lock = await _get_lock(google_sheet_id)
     async with lock:
