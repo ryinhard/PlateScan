@@ -6,10 +6,12 @@ Bot 與 PWA 統一使用以下 Google Sheet 工作表結構，確保前後端讀
 
 ### `users` 工作表
 
-| A: user_key | B: display_name | C: google_sheet_id | D: is_active | E: created_at |
-|---|---|---|---|---|
-| `line:U1234abcd...` | 小明 | 1BxiMVs0XRA5... | TRUE | 2026-08-14 |
-| `tg:987654321` | 小華 | 2CyjNWt1QBZ6... | TRUE | 2026-08-14 |
+| A: user_key | B: display_name | C: google_sheet_id | D: is_active | E: created_at | F: daily_count | G: count_date |
+|---|---|---|---|---|---|---|
+| `line:U1234abcd...` | 小明 | 1BxiMVs0XRA5... | TRUE | 2026-08-14 | 7 | 2026/08/17 |
+| `tg:987654321` | 小華 | 2CyjNWt1QBZ6... | TRUE | 2026-08-14 | 0 | |
+
+> `daily_count`／`count_date` 為 Gemini 每日用量計數（見 [commands.md](commands.md) 的「Gemini 用量控管」）。`count_date` 與當日（Asia/Taipei）不同時計數即歸零，不需排程重置。這兩欄由 `try_consume_daily_quota()` 獨立維護，`upsert_user()` 只更新 B:E 欄，兩者互不干擾。
 
 ### `buffer` 工作表
 
@@ -35,4 +37,6 @@ Bot 與 PWA 統一使用以下 Google Sheet 工作表結構，確保前後端讀
 | protein | 120 | g |
 | fat | 60 | g |
 
-> `goals` 工作表供 PWA 讀取顯示達成率使用，Bot 端亦可透過 `目標`／`設定目標` 指令查詢與寫入（見 [commands.md](commands.md)）。
+> `goals` 工作表由 Bot 的 `目標`／`設定目標` 指令查詢與寫入（見 [commands.md](commands.md)），PWA 則透過公開的 `gviz/tq` 端點**唯讀**取用以顯示各項營養素達成率。
+> `nutrient` 欄位由 Bot 寫入時固定為英文（`calories`/`carbs`/`protein`/`fat`），PWA 另接受使用者自行手動填寫的中文寫法（`熱量`/`碳水`/`蛋白質`/`脂肪`）。
+> PWA **無法回寫**此工作表（`gviz/tq` 為唯讀端點，且前端不得持有任何金鑰），其目標設定彈窗的「複製指令」按鈕產生的是 `設定目標 熱量 2000` 這類指令文字，需貼到 Bot 送出才會生效；彈窗中可直接儲存的只有容許誤差（存於瀏覽器 `localStorage`，不進 Sheet）。

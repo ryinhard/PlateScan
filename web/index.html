@@ -296,6 +296,7 @@ body {
   <div class="modal">
     <button class="close-btn" onclick="closeModal('settingsModal')">&times;</button>
     <h2>⚙️ 營養目標設定</h2>
+    <p class="help-text">目標值來自 Google Sheet 的 goals 工作表。在此調整數值<strong>不會直接生效</strong>，請按「📋 複製指令」後貼到 Bot 送出；容許誤差 (%) 則會直接儲存在本機。</p>
     <div class="form-row">
       <div class="form-group">
         <label>🔥 熱量 (kcal) 目標</label>
@@ -338,7 +339,8 @@ body {
     </div>
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal('settingsModal')">取消</button>
-      <button class="btn btn-primary" onclick="saveSettings()">儲存</button>
+      <button class="btn btn-outline" onclick="copyGoalCommands()">📋 複製指令</button>
+      <button class="btn btn-primary" onclick="saveSettings()">儲存容許誤差</button>
     </div>
   </div>
 </div>
@@ -395,11 +397,12 @@ const state = {
   sheetConfig: { id: '' },
 };
 
+// goalLabel 為 Bot「設定目標」指令使用的欄位名稱（見 docs/commands.md）
 const NUTRIENTS = [
-  { key: 'calories', label: '🔥 熱量', unit: 'kcal', color: '#e74c3c' },
-  { key: 'protein',  label: '🥩 蛋白質', unit: 'g', color: '#3498db' },
-  { key: 'carbs',    label: '🍚 碳水', unit: 'g', color: '#f39c12' },
-  { key: 'fat',      label: '🧈 脂肪', unit: 'g', color: '#9b59b6' },
+  { key: 'calories', label: '🔥 熱量', unit: 'kcal', color: '#e74c3c', goalLabel: '熱量' },
+  { key: 'protein',  label: '🥩 蛋白質', unit: 'g', color: '#3498db', goalLabel: '蛋白質' },
+  { key: 'carbs',    label: '🍚 碳水', unit: 'g', color: '#f39c12', goalLabel: '碳水' },
+  { key: 'fat',      label: '🧈 脂肪', unit: 'g', color: '#9b59b6', goalLabel: '脂肪' },
 ];
 
 const GVIZ_SHEET_NAME = 'daily_log';
@@ -561,16 +564,65 @@ function loadCSV(event) {
 }
 
 // ==================== Google Sheet (gviz/tq，免 API Key) ====================
-function buildGvizUrl(sheetId) {
-  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(GVIZ_SHEET_NAME)}`;
+function buildGvizUrl(sheetId, sheetName) {
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(sheetId)}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName || GVIZ_SHEET_NAME)}`;
 }
 
-async function fetchGvizCSV(sheetId) {
-  const res = await fetch(buildGvizUrl(sheetId));
+async function fetchGvizCSV(sheetId, sheetName) {
+  const res = await fetch(buildGvizUrl(sheetId, sheetName));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
   if (!text || /<html/i.test(text)) throw new Error('回應格式異常，請確認 Sheet ID 與檢視權限');
   return text;
+}
+
+// goals 工作表的 nutrient 欄位對應到 state.targets 的 key。
+// Bot 的「設定目標」指令寫入英文（calories/carbs/protein/fat），另接受使用者
+// 自行在 Sheet 上手動填寫的中文寫法。
+const GOAL_NUTRIENT_KEYS = {
+  calories: 'calories', 熱量: 'calories', 卡路里: 'calories',
+  carbs: 'carbs', carbs_g: 'carbs', 碳水: 'carbs', 碳水化合物: 'carbs',
+  protein: 'protein', protein_g: 'protein', 蛋白質: 'protein',
+  fat: 'fat', fat_g: 'fat', 脂肪: 'fat',
+};
+
+// 解析 goals 工作表（nutrient | target | unit），回傳 { key: 目標值 }。
+function parseGoalsCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const goals = {};
+  for (let i = 1; i < lines.length; i++) {  // 第 1 列為表頭
+    const cols = parseCSVLine(lines[i]);
+    if (!cols || cols.length < 2) continue;
+    const key = GOAL_NUTRIENT_KEYS[String(cols[0]).trim().toLowerCase()]
+      || GOAL_NUTRIENT_KEYS[String(cols[0]).trim()];
+    const value = parseFloat(cols[1]);
+    if (key && !isNaN(value) && value > 0) goals[key] = value;
+  }
+  return goals;
+}
+
+// 讀取 Sheet 的 goals 工作表覆蓋畫面上的目標值。
+// goals 分頁不存在、無檢視權限或內容異常時一律靜默沿用 localStorage 既有設定——
+// 早期綁定的 Sheet 可能沒有 goals 分頁（自動建立分頁是後來才加的），
+// 不可因為讀不到目標就讓整個儀表板載入失敗。
+async function loadGoalsFromGviz(sheetId) {
+  try {
+    const goals = parseGoalsCSV(await fetchGvizCSV(sheetId, 'goals'));
+    let applied = 0;
+    NUTRIENTS.forEach(n => {
+      if (goals[n.key] !== undefined) {
+        state.targets[n.key].target = goals[n.key];
+        applied++;
+      }
+    });
+    if (applied) {
+      saveTargetsToLocal();
+      syncTargetInputs();
+    }
+    return applied;
+  } catch(e) {
+    return 0;
+  }
 }
 
 function saveSheetSettings() {
@@ -620,6 +672,8 @@ async function loadFromGviz(silent) {
   try {
     const text = await fetchGvizCSV(id);
     state.data = parseCSV(text);
+    // 目標值與飲食資料同源，一併讀取；讀不到時 loadGoalsFromGviz 會靜默沿用本機設定
+    await loadGoalsFromGviz(id);
     initAfterData();
     if (!silent) {
       closeModal('dataModal');
@@ -716,39 +770,81 @@ function setView(v) {
 }
 
 // ==================== Settings ====================
+function inputId(prefix, key) {
+  return prefix + key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function syncTargetInputs() {
+  for (const n of NUTRIENTS) {
+    const t = state.targets[n.key];
+    if (!t) continue;
+    const targetInput = document.getElementById(inputId('target', n.key));
+    const toleranceInput = document.getElementById(inputId('tolerance', n.key));
+    if (targetInput) targetInput.value = t.target;
+    if (toleranceInput) toleranceInput.value = t.tolerance;
+  }
+}
+
+function saveTargetsToLocal() {
+  try { localStorage.setItem('nutritionTargets', JSON.stringify(state.targets)); } catch(e) {}
+}
+
 function loadSettings() {
   try {
     const saved = localStorage.getItem('nutritionTargets');
-    if (saved) {
-      state.targets = JSON.parse(saved);
-      for (const n of NUTRIENTS) {
-        const k = n.key;
-        document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].target;
-        document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].tolerance;
-      }
-    }
+    if (saved) state.targets = JSON.parse(saved);
   } catch(e) {}
+  syncTargetInputs();
 }
 
+// 目標值的真正來源是 Sheet 的 goals 工作表（由 Bot 的「設定目標」指令寫入），
+// PWA 無法回寫（gviz/tq 為唯讀端點，且前端不得持有任何金鑰），
+// 因此這裡只把容許誤差存進 localStorage；目標數值改用「複製指令」交給 Bot 寫入。
 function saveSettings() {
   for (const n of NUTRIENTS) {
-    const k = n.key;
-    const t = parseFloat(document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value) || 0;
-    const tol = parseFloat(document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value) || 10;
-    state.targets[k] = { target: t, tolerance: tol };
+    const input = document.getElementById(inputId('tolerance', n.key));
+    const tolerance = parseFloat(input ? input.value : '') || 10;
+    if (state.targets[n.key]) state.targets[n.key].tolerance = tolerance;
   }
-  localStorage.setItem('nutritionTargets', JSON.stringify(state.targets));
+  saveTargetsToLocal();
   closeModal('settingsModal');
   updateAll();
-  showToast('✅ 目標已儲存');
+  showToast('✅ 容許誤差已儲存');
+}
+
+// 把畫面上調整後的目標值組成 Bot 指令供複製，貼到 Bot 送出後才會真正寫入 Sheet。
+function copyGoalCommands() {
+  const commands = [];
+  for (const n of NUTRIENTS) {
+    const input = document.getElementById(inputId('target', n.key));
+    const value = parseFloat(input ? input.value : '');
+    if (!isNaN(value) && value > 0) commands.push(`設定目標 ${n.goalLabel} ${value}`);
+  }
+  if (!commands.length) { showToast('⚠️ 請先填入至少一項目標值'); return; }
+
+  const text = commands.join('\n');
+  const done = () => showToast('✅ 已複製，貼到 Bot 送出才會生效');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+// navigator.clipboard 需要安全內容環境（HTTPS），不支援時退回舊版 execCommand
+function fallbackCopy(text, done) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try { document.execCommand('copy'); done(); } catch(e) { showToast('❌ 複製失敗，請手動複製'); }
+  document.body.removeChild(area);
 }
 
 function showSettings() {
-  for (const n of NUTRIENTS) {
-    const k = n.key;
-    document.getElementById('target' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].target;
-    document.getElementById('tolerance' + k.charAt(0).toUpperCase() + k.slice(1)).value = state.targets[k].tolerance;
-  }
+  syncTargetInputs();
   document.getElementById('settingsModal').classList.add('open');
 }
 

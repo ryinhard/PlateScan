@@ -37,7 +37,7 @@ pytest
 
 ## 目前狀態
 
-- **Bot 端**：LINE / Telegram Webhook 已串接照片緩衝、AI 辨識（Gemini，含 503 過載自動降級備用模型）、寫入使用者 Google Sheet、Reply/Push 降級回覆。已支援的指令與規劃中指令列表見 [docs/commands.md](docs/commands.md)。
+- **Bot 端**：LINE / Telegram Webhook 已串接照片緩衝、AI 辨識（Gemini，含 503 過載自動降級備用模型）、寫入使用者 Google Sheet、Reply/Push 降級回覆，並具備每人每日的辨識次數與單次照片張數上限以控管 API 成本。已支援的指令列表見 [docs/commands.md](docs/commands.md)。
 - **前端 PWA**：`web/` 儀表板透過免金鑰的 `gviz/tq` 端點讀取 Google Sheet 資料，提供日/週/月營養素進度圖表，並支援離線快取。
 - **部署**：後端已上線 Cloud Run，前端已上線 GitHub Pages（詳見 [docs/deployment.md](docs/deployment.md)）。
 

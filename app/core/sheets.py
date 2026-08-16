@@ -85,7 +85,10 @@ async def _get_lock(user_key: str) -> asyncio.Lock:
         return _locks[user_key]
 
 
-# --- users 工作表：user_key | display_name | google_sheet_id | is_active | created_at ---
+# --- users 工作表：user_key | display_name | google_sheet_id | is_active | created_at
+#                   | daily_count | count_date ---
+# 後兩欄為 Gemini 每日用量計數（M13），由 try_consume_daily_quota() 獨立維護；
+# upsert_user() 只更新 B:E 欄，兩者互不干擾。
 
 
 def _row_to_user(row: list[str]) -> dict[str, Any]:
@@ -135,6 +138,56 @@ async def upsert_user(
     lock = await _get_lock(user_key)
     async with lock:
         await asyncio.to_thread(_write)
+
+
+def _parse_count(raw: Any) -> int:
+    """將 users 工作表 daily_count 欄位轉為整數，空白/非數字/負數一律視為 0。
+
+    gspread 的 get_all_values() 回傳字串，但不假設型別——使用者也可能在
+    Sheet 上手動把該格改成數字格式或填入奇怪的內容。
+    """
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def try_consume_daily_quota(user_key: str, limit: int, today: str) -> tuple[bool, int]:
+    """檢查並扣用 user_key 當日的 Gemini 辨識次數配額（對應「ok」指令）。
+
+    回傳 (是否允許本次辨識, 本次計入後的已用次數)；被擋下時第二個值為目前已用次數。
+    以 users 工作表的 daily_count / count_date 兩欄持久化計數——記憶體計數在
+    Cloud Run 容器重啟或多實例時會歸零、形同虛設，故必須寫回 Sheet。
+
+    「讀取→判斷→寫回」整段都在 _get_lock(user_key) 內完成，避免同一使用者
+    連續觸發 ok 時發生少算。count_date 與傳入的 today（Asia/Taipei 日期字串）
+    不同即視為新的一天並歸零，因此不需要另外排程重置。
+    找不到該使用者（尚未綁定）時一律放行，交由呼叫端既有的綁定檢查處理。
+    """
+
+    def _write() -> tuple[bool, int]:
+        worksheet = _get_worksheet(USERS_WORKSHEET)
+        # gspread 列號從 1 起算且第 1 列為表頭，故資料列自第 2 列開始
+        for row_number, row in enumerate(worksheet.get_all_values()[1:], start=2):
+            if not row or row[0] != user_key:
+                continue
+
+            stored_date = row[6] if len(row) > 6 else ""
+            used = _parse_count(row[5]) if len(row) > 5 else 0
+            if stored_date != today:
+                used = 0
+
+            if used >= limit:
+                return False, used
+
+            worksheet.update(range_name=f"F{row_number}:G{row_number}", values=[[used + 1, today]])
+            return True, used + 1
+
+        return True, 0
+
+    lock = await _get_lock(user_key)
+    async with lock:
+        return await asyncio.to_thread(_write)
 
 
 # --- buffer 工作表：user_key | item_type | content | created_at ---
@@ -254,7 +307,30 @@ async def get_daily_log_rows(google_sheet_id: str, date: str) -> list[dict[str, 
         return await asyncio.to_thread(_read)
 
 
+async def delete_latest_daily_log_row(google_sheet_id: str) -> Optional[dict[str, Any]]:
+    """刪除 daily_log 最後一列（最近一筆紀錄），並回傳被刪除的內容供回覆使用者確認。
+
+    對應「刪除」指令。daily_log 尚無任何紀錄（只有表頭列或全空）時回傳 None。
+    刻意先讀出內容再刪除，讓使用者能從回覆中看到刪掉的究竟是哪一筆。
+    """
+
+    def _write() -> Optional[dict[str, Any]]:
+        worksheet = _get_user_worksheet(google_sheet_id, DAILY_LOG_WORKSHEET)
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return None
+        last_row = len(all_values)  # gspread 列號從 1 起算，含表頭列
+        deleted = _row_to_daily_log(all_values[last_row - 1])
+        worksheet.delete_rows(last_row)
+        return deleted
+
+    lock = await _get_lock(google_sheet_id)
+    async with lock:
+        return await asyncio.to_thread(_write)
+
+
 _DAILY_LOG_FIELD_COLUMNS = {
+    "date": "A",
     "meal": "B",
     "calories": "D",
     "carbs_g": "E",
@@ -263,12 +339,16 @@ _DAILY_LOG_FIELD_COLUMNS = {
 }
 
 
-async def update_latest_daily_log_field(google_sheet_id: str, field: str, value: Any) -> bool:
-    """修正使用者個人 Sheet 中 daily_log 最後一列（最近一筆紀錄）的指定欄位。
+async def update_latest_daily_log_fields(google_sheet_id: str, fields: dict[str, Any]) -> bool:
+    """修正使用者個人 Sheet 中 daily_log 最後一列（最近一筆紀錄）的一或多個欄位。
 
-    對應「修正 熱量 700」「修正 餐次 午餐」等指令。field 須為
-    _DAILY_LOG_FIELD_COLUMNS 的其中一個 key。daily_log 尚無任何紀錄
-    （只有表頭列或全空）時回傳 False，呼叫端應提示使用者尚無可修正的紀錄。
+    對應「修正 熱量 700」「修正 餐次 午餐 日期 2026/08/17」等指令。fields 的 key
+    須為 _DAILY_LOG_FIELD_COLUMNS 的其中一個。呼叫端必須先完成全部欄位的格式驗證
+    再呼叫本函式，這裡以 batch_update 一次送出，避免多欄位修正時前幾欄已寫入、
+    後面某欄才發現有問題而留下半套狀態。
+
+    daily_log 尚無任何紀錄（只有表頭列或全空）時回傳 False，呼叫端應提示使用者
+    尚無可修正的紀錄。
     """
 
     def _write() -> bool:
@@ -277,8 +357,12 @@ async def update_latest_daily_log_field(google_sheet_id: str, field: str, value:
         if len(all_values) <= 1:
             return False
         last_row = len(all_values)  # gspread 列號從 1 起算，含表頭列
-        column_letter = _DAILY_LOG_FIELD_COLUMNS[field]
-        worksheet.update(range_name=f"{column_letter}{last_row}", values=[[value]])
+        worksheet.batch_update(
+            [
+                {"range": f"{_DAILY_LOG_FIELD_COLUMNS[field]}{last_row}", "values": [[value]]}
+                for field, value in fields.items()
+            ]
+        )
         return True
 
     lock = await _get_lock(google_sheet_id)
@@ -287,7 +371,9 @@ async def update_latest_daily_log_field(google_sheet_id: str, field: str, value:
 
 
 # --- goals 工作表（使用者個人 Sheet）：nutrient | target | unit ---
-# 目前僅供 PWA 讀取顯示達成率；「目標」指令（app/core/dispatcher.py）另外查詢此工作表回傳文字彙整。
+# 三個讀寫來源：Bot 的「目標」查詢與「設定目標」寫入（app/core/dispatcher.py），
+# 以及 PWA（web/index.html 的 loadGoalsFromGviz()）透過公開的 gviz/tq 端點唯讀取用，
+# 用來顯示各項營養素的達成率。PWA 無法回寫，其「複製指令」按鈕產生的是「設定目標」指令文字。
 
 
 def _row_to_goal(row: list[str]) -> dict[str, Any]:

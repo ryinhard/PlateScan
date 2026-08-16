@@ -10,6 +10,23 @@ from app.config import settings
 from app.core import dispatcher, downloader, sheets, vision
 
 
+@pytest.fixture(autouse=True)
+def stub_daily_quota(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, str]]:
+    """預設放行每日用量配額，並攔截該呼叫避免打到真實 Google Sheets。
+
+    設為 autouse 是因為 ok 指令路徑上每個測試都會經過配額檢查，逐一 mock 容易
+    漏掉（漏掉時會靜默改打真實 API），需要驗證上限行為的測試自行覆寫此替身。
+    """
+    calls: list[tuple[str, int, str]] = []
+
+    async def _fake_try_consume(user_key: str, limit: int, today: str) -> tuple[bool, int]:
+        calls.append((user_key, limit, today))
+        return True, len(calls)
+
+    monkeypatch.setattr(sheets, "try_consume_daily_quota", _fake_try_consume)
+    return calls
+
+
 @pytest.fixture()
 def spy_append(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
     calls: list[tuple[str, str, str]] = []
@@ -323,18 +340,18 @@ async def test_handle_text_correct_command_updates_numeric_field(
     spy_append: list[tuple[str, str, str]],
     fake_user,
 ):
-    calls: list[tuple[str, str, object]] = []
+    calls: list[tuple[str, dict]] = []
 
-    async def _fake_update(google_sheet_id: str, field: str, value):
-        calls.append((google_sheet_id, field, value))
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
         return True
 
-    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
 
     reply = await dispatcher.handle_text("line:U1", "修正 熱量 700")
 
     assert spy_append == []
-    assert calls == [("sheet-abc", "calories", 700)]
+    assert calls == [("sheet-abc", {"calories": 700})]
     assert reply is not None and "700" in reply
 
 
@@ -343,17 +360,17 @@ async def test_handle_text_correct_command_updates_meal_label(
     spy_append: list[tuple[str, str, str]],
     fake_user,
 ):
-    calls: list[tuple[str, str, object]] = []
+    calls: list[tuple[str, dict]] = []
 
-    async def _fake_update(google_sheet_id: str, field: str, value):
-        calls.append((google_sheet_id, field, value))
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
         return True
 
-    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
 
     reply = await dispatcher.handle_text("line:U1", "修正 餐次 午餐")
 
-    assert calls == [("sheet-abc", "meal", "午餐")]
+    assert calls == [("sheet-abc", {"meal": "午餐"})]
     assert reply is not None and "午餐" in reply
 
 
@@ -374,10 +391,10 @@ async def test_handle_text_correct_command_reports_no_records(
     monkeypatch: pytest.MonkeyPatch,
     fake_user,
 ):
-    async def _fake_update(google_sheet_id: str, field: str, value):
+    async def _fake_update(google_sheet_id: str, fields: dict):
         return False
 
-    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
 
     reply = await dispatcher.handle_text("line:U1", "修正 熱量 700")
 
@@ -391,6 +408,11 @@ async def test_handle_text_correct_command_reports_no_records(
         "修正 卡路里 700",  # 不支援的欄位
         "修正 熱量 abc",  # 數值非數字
         "修正 餐次 深夜食堂",  # 餐次非合法選項
+        "修正 日期 2026/02/30",  # 不存在的日期
+        "修正 日期 明天",  # 不支援的相對日期說法
+        "修正 熱量 100 蛋白質",  # 多欄位時參數落單
+        "修正 熱量 100 熱量 200",  # 同一欄位重複指定
+        "修正 熱量 100 蛋白質 abc",  # 多欄位時後面那欄格式錯誤
     ],
 )
 async def test_handle_text_correct_command_rejects_invalid_input(
@@ -405,12 +427,12 @@ async def test_handle_text_correct_command_rejects_invalid_input(
         get_user_calls.append(user_key)
         return {"google_sheet_id": "sheet-abc"}
 
-    async def _fake_update(google_sheet_id: str, field: str, value):
-        update_calls.append((google_sheet_id, field, value))
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        update_calls.append((google_sheet_id, fields))
         return True
 
     monkeypatch.setattr(sheets, "get_user", _fake_get_user)
-    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
 
     reply = await dispatcher.handle_text("line:U1", text)
 
@@ -821,15 +843,15 @@ async def test_handle_text_fix_alias_updates_numeric_field(
 ):
     calls: list[tuple[str, str, object]] = []
 
-    async def _fake_update(google_sheet_id: str, field: str, value):
-        calls.append((google_sheet_id, field, value))
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
         return True
 
-    monkeypatch.setattr(sheets, "update_latest_daily_log_field", _fake_update)
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
 
     reply = await dispatcher.handle_text("line:U1", "/fix 熱量 700")
 
-    assert calls == [("sheet-abc", "calories", 700)]
+    assert calls == [("sheet-abc", {"calories": 700})]
     assert reply is not None and "700" in reply
 
 
@@ -855,3 +877,285 @@ async def test_handle_text_set_alias_binds_sheet_id(
 
     assert upsert_calls == [("line:U1", "sheet-new", "")]
     assert reply is not None and "sheet-new" in reply
+
+
+# --- M13：日期修正、多欄位修正、刪除、每日用量上限 ---
+
+
+@pytest.fixture()
+def spy_update_fields(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
+        return True
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("修正 日期 2026/08/17", "2026/08/17"),
+        ("修正 日期 2026-08-17", "2026/08/17"),
+        ("修正 日期 2026.08.17", "2026/08/17"),
+        ("修正 日期 20260817", "2026/08/17"),
+        ("修正 日期 2026/8/7", "2026/08/07"),
+        ("修改日期 2026/08/17", "2026/08/17"),
+        ("修改日期 2026-08-17", "2026/08/17"),
+        ("/setdate 20260817", "2026/08/17"),
+    ],
+)
+async def test_date_correction_normalizes_accepted_formats(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+    text: str,
+    expected: str,
+):
+    """各種日期寫法都應正規化為 YYYY/MM/DD 再寫入（前端 parseDate() 依此解析）。"""
+    reply = await dispatcher.handle_text("line:U1", text)
+
+    assert spy_update_fields == [("sheet-abc", {"date": expected})]
+    assert reply is not None and expected in reply
+
+
+async def test_date_correction_supports_relative_days(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    from datetime import datetime, timedelta
+
+    yesterday = (datetime.now(dispatcher._TAIPEI_TZ) - timedelta(days=1)).strftime("%Y/%m/%d")
+
+    await dispatcher.handle_text("line:U1", "修改日期 昨天")
+
+    assert spy_update_fields == [("sheet-abc", {"date": yesterday})]
+
+
+async def test_date_correction_without_year_fills_current_year(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    from datetime import datetime
+
+    current_year = datetime.now(dispatcher._TAIPEI_TZ).year
+
+    await dispatcher.handle_text("line:U1", "修改日期 8/17")
+
+    assert spy_update_fields == [("sheet-abc", {"date": f"{current_year}/08/17"})]
+
+
+async def test_correct_command_updates_multiple_fields_in_one_batch(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    reply = await dispatcher.handle_text("line:U1", "修正 熱量 2000 蛋白質 120")
+
+    assert spy_update_fields == [("sheet-abc", {"calories": 2000, "protein_g": 120})]
+    assert reply is not None
+    assert "熱量 → 2000" in reply and "蛋白質 → 120" in reply
+
+
+async def test_correct_command_mixes_meal_and_date_fields(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    await dispatcher.handle_text("line:U1", "修正 餐次 早餐 日期 2026/08/17")
+
+    assert spy_update_fields == [("sheet-abc", {"meal": "早餐", "date": "2026/08/17"})]
+
+
+async def test_correct_command_validates_all_fields_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """後面欄位格式錯誤時，前面已驗證的欄位也不得寫入（避免半套狀態）。"""
+    update_calls: list[tuple] = []
+
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        update_calls.append((google_sheet_id, fields))
+        return True
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
+
+    reply = await dispatcher.handle_text("line:U1", "修正 熱量 2000 日期 2026/02/30")
+
+    assert update_calls == []
+    assert reply is not None and "日期" in reply
+
+
+@pytest.mark.parametrize("command", ["刪除", "delete", "/delete", " 刪除 "])
+async def test_delete_command_removes_latest_row_and_reports_content(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+    command: str,
+):
+    delete_calls: list[str] = []
+
+    async def _fake_delete(google_sheet_id: str):
+        delete_calls.append(google_sheet_id)
+        return {
+            "date": "2026/08/17",
+            "meal": "午餐",
+            "items": "雞腿便當、燙青菜",
+            "calories": 850.0,
+            "carbs_g": 95.0,
+            "protein_g": 38.0,
+            "fat_g": 32.0,
+            "confidence": 0.9,
+        }
+
+    monkeypatch.setattr(sheets, "delete_latest_daily_log_row", _fake_delete)
+
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []  # 指令不應被當成一般文字暫存
+    assert delete_calls == ["sheet-abc"]
+    assert reply is not None
+    assert "已刪除最近一筆紀錄" in reply
+    assert "2026/08/17 午餐 雞腿便當、燙青菜" in reply
+    assert "熱量 850" in reply  # float 應去掉多餘的 .0
+    assert "850.0" not in reply
+
+
+async def test_delete_command_reports_when_no_records(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    async def _fake_delete(google_sheet_id: str):
+        return None
+
+    monkeypatch.setattr(sheets, "delete_latest_daily_log_row", _fake_delete)
+
+    reply = await dispatcher.handle_text("line:U1", "刪除")
+
+    assert reply == "尚無可刪除的紀錄"
+
+
+async def test_delete_command_without_bound_sheet(monkeypatch: pytest.MonkeyPatch):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "刪除")
+
+    assert reply is not None and "綁定" in reply
+
+
+async def test_ok_command_blocked_when_daily_quota_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """超過每日上限時：不得下載照片、不得呼叫 Gemini，且緩衝區必須保留。"""
+    download_calls: list[tuple] = []
+    analyze_calls: list[tuple] = []
+    clear_calls: list[str] = []
+
+    async def _fake_get_buffer_items(user_key: str):
+        return [{"user_key": user_key, "item_type": "photo", "content": "msg-1"}]
+
+    async def _fake_try_consume(user_key: str, limit: int, today: str):
+        return False, limit
+
+    async def _fake_download_photos(user_key: str, photo_ids: list[str]):
+        download_calls.append((user_key, photo_ids))
+        return []
+
+    async def _fake_analyze_meal(images, captions):
+        analyze_calls.append((images, captions))
+        return None
+
+    async def _fake_clear_buffer(user_key: str) -> None:
+        clear_calls.append(user_key)
+
+    monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
+    monkeypatch.setattr(sheets, "try_consume_daily_quota", _fake_try_consume)
+    monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
+    monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)
+    monkeypatch.setattr(vision, "analyze_meal", _fake_analyze_meal)
+
+    reply = await dispatcher.handle_text("line:U1", "ok")
+
+    assert download_calls == []  # 必須擋在下載與 Gemini 呼叫之前
+    assert analyze_calls == []
+    assert clear_calls == []  # 緩衝區保留，隔天可接續辨識
+    assert reply is not None
+    assert "上限" in reply and "還留著" in reply
+
+
+async def test_ok_command_truncates_photos_over_per_call_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """單次 ok 照片數超過上限時只取前 N 張，並在回覆中告知已略過幾張。"""
+    monkeypatch.setattr(settings, "max_photos_per_ok", 3)
+
+    download_calls: list[tuple[str, list[str]]] = []
+
+    async def _fake_get_buffer_items(user_key: str):
+        return [
+            {"user_key": user_key, "item_type": "photo", "content": f"msg-{i}"} for i in range(5)
+        ]
+
+    async def _fake_download_photos(user_key: str, photo_ids: list[str]):
+        download_calls.append((user_key, photo_ids))
+        return [b"img"] * len(photo_ids)
+
+    async def _fake_analyze_meal(images, captions):
+        return {
+            "cot_reasoning": "測試",
+            "confidence_score": 0.8,
+            "items": [{"name": "便當", "calories": 650, "carbs_g": 80, "protein_g": 30, "fat_g": 20}],
+        }
+
+    async def _fake_append_daily_log(*args, **kwargs) -> None:
+        return None
+
+    async def _fake_clear_buffer(user_key: str) -> None:
+        return None
+
+    monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
+    monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
+    monkeypatch.setattr(sheets, "append_daily_log", _fake_append_daily_log)
+    monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)
+    monkeypatch.setattr(vision, "analyze_meal", _fake_analyze_meal)
+
+    reply = await dispatcher.handle_text("line:U1", "ok")
+
+    assert download_calls == [("line:U1", ["msg-0", "msg-1", "msg-2"])]
+    assert reply is not None and "略過後面 2 張" in reply
+
+
+async def test_ok_command_passes_configured_limit_and_taipei_date_to_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    stub_daily_quota: list[tuple[str, int, str]],
+    fake_user,
+):
+    from datetime import datetime
+
+    monkeypatch.setattr(settings, "daily_ok_limit_per_user", 30)
+
+    async def _fake_get_buffer_items(user_key: str):
+        return [{"user_key": user_key, "item_type": "text", "content": "雞腿便當"}]
+
+    async def _fake_analyze_meal(images, captions):
+        return None
+
+    async def _fake_clear_buffer(user_key: str) -> None:
+        return None
+
+    async def _fake_download_photos(user_key: str, photo_ids: list[str]):
+        return []
+
+    monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
+    monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
+    monkeypatch.setattr(downloader, "download_photos", _fake_download_photos)
+    monkeypatch.setattr(vision, "analyze_meal", _fake_analyze_meal)
+
+    await dispatcher.handle_text("line:U1", "ok")
+
+    today = datetime.now(dispatcher._TAIPEI_TZ).strftime("%Y/%m/%d")
+    assert stub_daily_quota == [("line:U1", 30, today)]

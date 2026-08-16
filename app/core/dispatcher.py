@@ -9,7 +9,7 @@ LINE / Telegram adapter 皆呼叫本模組的 handle_photo() / handle_text()，
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -26,7 +26,9 @@ _HELP_TEXT = (
     "今日（/today）→ 查詢今日累計營養素\n"
     "圖表 / 分析（/chart）→ 取得個人 PWA 儀表板連結\n"
     "連結 / 原始表單（/link）→ 取得個人 Google Sheet 編輯連結\n"
-    "修正 熱量 700（/fix）→ 修正最近一筆紀錄的數值或餐次\n"
+    "修正 熱量 700（/fix）→ 修正最近一筆紀錄的數值或餐次（可一次修正多項）\n"
+    "修改日期 2026/08/17（/setdate）→ 修正最近一筆紀錄的日期\n"
+    "刪除（/delete）→ 刪除最近一筆紀錄\n"
     "設定 {Sheet ID}（/set）→ 綁定/更換個人 Google Sheet\n"
     "設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
     "目標（/goal）→ 查詢每日營養目標\n"
@@ -53,6 +55,7 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "link": frozenset({"連結", "原始表單", "link"}),
     "goal_query": frozenset({"目標", "goal"}),
     "cancel": frozenset({"取消", "cancel"}),
+    "delete": frozenset({"刪除", "delete"}),
     "help": frozenset({"說明", "help"}),
     "onboarding": frozenset({"新手教學", "教學", "start"}),
 }
@@ -61,6 +64,7 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
 # 「設定目標」須排在別名集合中優先於「設定」比對（兩者是不同的完整詞，不會互相前綴衝突）。
 _PREFIX_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "correct": frozenset({"修正", "fix"}),
+    "correct_date": frozenset({"修改日期", "setdate"}),
     "goal_set": frozenset({"設定目標", "setgoal"}),
     "set_sheet": frozenset({"設定", "set"}),
 }
@@ -135,8 +139,55 @@ _CORRECT_FIELD_ALIASES = {
     "蛋白質": "protein_g",
     "脂肪": "fat_g",
     "餐次": "meal",
+    "日期": "date",
 }
 _VALID_MEAL_NAMES = {"早餐", "午餐", "晚餐", "宵夜"}
+_CORRECT_FIELD_LIST = "、".join(_CORRECT_FIELD_ALIASES)
+
+# 「修改日期 昨天」等相對日期說法，值為相對今日（Asia/Taipei）的天數差。
+_RELATIVE_DATE_OFFSETS = {"今天": 0, "昨天": -1, "前天": -2}
+# 日期分隔符號：接受 2026/08/17、2026-08-17、2026.08.17 三種常見寫法。
+_DATE_SEPARATOR_PATTERN = re.compile(r"[/\-.]")
+
+
+def _parse_date(raw: str) -> Optional[str]:
+    """將使用者輸入的日期正規化為 YYYY/MM/DD（CLAUDE.md 規定的統一格式，
+    前端 web/index.html 的 parseDate() 依此解析），無法解析時回傳 None。
+
+    接受 2026/08/17、2026-08-17、2026.08.17、20260817、2026/8/7（未補零）、
+    8/17（省略年份時補當年）以及「今天」「昨天」「前天」。
+    刻意不阻擋未來日期（使用者可能預先調整），但 2026/02/30 這類
+    不存在的日期會由 datetime() 自行擋下。
+    """
+    text = raw.strip()
+    today = datetime.now(_TAIPEI_TZ)
+
+    if text in _RELATIVE_DATE_OFFSETS:
+        return (today + timedelta(days=_RELATIVE_DATE_OFFSETS[text])).strftime("%Y/%m/%d")
+
+    if len(text) == 8 and text.isdigit():
+        parts = [text[:4], text[4:6], text[6:]]
+    else:
+        parts = _DATE_SEPARATOR_PATTERN.split(text)
+
+    if len(parts) == 2:  # 只給月/日時補上當年
+        parts = [str(today.year), *parts]
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+
+    try:
+        return datetime(int(parts[0]), int(parts[1]), int(parts[2])).strftime("%Y/%m/%d")
+    except ValueError:
+        return None
+
+
+def _date_format_hint() -> str:
+    """日期格式錯誤提示。範例日期帶入當天實際日期，比寫死的範例更好照著改。"""
+    example = datetime.now(_TAIPEI_TZ).strftime("%Y/%m/%d")
+    return (
+        f"日期格式無法辨識，請使用「修改日期 {example}」（YYYY/MM/DD）\n"
+        f"也可以輸入 {example.replace('/', '-')} 或 8/17（自動補今年），或直接輸入「昨天」「前天」"
+    )
 
 # 「設定目標 熱量 2000」的欄位別名：對應 goals 工作表 nutrient 值與預設單位。
 _GOAL_FIELD_ALIASES: dict[str, tuple[str, str]] = {
@@ -218,6 +269,16 @@ async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
     if command == "correct":
         return await _handle_correct(user_key, args)
 
+    if command == "correct_date":
+        # 「修改日期 2026/08/17」與「修正 日期 2026/08/17」是同一件事，
+        # 兩種說法都保留，內部統一導向 _handle_correct 處理。
+        if len(args) != 1:
+            return _date_format_hint()
+        return await _handle_correct(user_key, ["日期", args[0]])
+
+    if command == "delete":
+        return await _handle_delete(user_key)
+
     if command == "set_sheet":
         return await _handle_set(user_key, args)
 
@@ -238,6 +299,31 @@ async def _handle_ok(user_key: str) -> Optional[str]:
     if not user or not user.get("google_sheet_id"):
         logger.warning("user_key=%s 尚未綁定個人 Google Sheet，略過寫入 daily_log", user_key)
         return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+
+    # 用量控管必須擋在下載照片與呼叫 Gemini「之前」，否則額度照樣消耗；
+    # 且超限時刻意不清空 buffer，讓使用者隔天直接傳 ok 就能接續辨識。
+    allowed, used = await sheets.try_consume_daily_quota(
+        user_key, settings.daily_ok_limit_per_user, datetime.now(_TAIPEI_TZ).strftime("%Y/%m/%d")
+    )
+    if not allowed:
+        logger.warning("user_key=%s 今日辨識次數已達上限（%d 次），略過辨識", user_key, used)
+        return (
+            f"今日辨識次數已達上限（{settings.daily_ok_limit_per_user} 次），請明天再試。\n"
+            "你的照片和描述都還留著，明天直接傳「ok」就會繼續辨識。"
+        )
+
+    # Gemini 按 token 計費、圖片 token 為成本大宗，故單次 ok 的張數也須設上限；
+    # 超量時取前 N 張而非整批擋下，避免使用者卡住無法完成這一餐的紀錄。
+    skipped_photos = max(0, len(photo_ids) - settings.max_photos_per_ok)
+    if skipped_photos:
+        logger.warning(
+            "user_key=%s 單次 ok 照片數 %d 超過上限 %d，僅取前 %d 張",
+            user_key,
+            len(photo_ids),
+            settings.max_photos_per_ok,
+            settings.max_photos_per_ok,
+        )
+        photo_ids = photo_ids[: settings.max_photos_per_ok]
 
     images = await downloader.download_photos(user_key, photo_ids)
     result = await vision.analyze_meal(images, captions)
@@ -277,10 +363,13 @@ async def _handle_ok(user_key: str) -> Optional[str]:
     )
     await sheets.clear_buffer(user_key)
 
-    return (
+    reply = (
         f"已記錄「{meal}」：{item_names}\n"
         f"熱量 {calories} kcal ｜ 碳水 {carbs_g}g ｜ 蛋白質 {protein_g}g ｜ 脂肪 {fat_g}g"
     )
+    if skipped_photos:
+        reply += f"\n（單次最多辨識 {settings.max_photos_per_ok} 張照片，本次已略過後面 {skipped_photos} 張）"
+    return reply
 
 
 async def _handle_today(user_key: str) -> str:
@@ -330,40 +419,98 @@ async def _handle_link(user_key: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{user['google_sheet_id']}/edit"
 
 
-async def _handle_correct(user_key: str, args: list[str]) -> str:
-    if len(args) != 2:
-        return "指令格式錯誤，請使用「修正 熱量 700」或「修正 餐次 午餐」"
-
-    field_label, raw_value = args
-    field = _CORRECT_FIELD_ALIASES.get(field_label)
-    if field is None:
-        return f"不支援的欄位「{field_label}」，可用欄位：熱量、碳水、蛋白質、脂肪、餐次"
-
-    value: Any
+def _validate_correct_value(field: str, field_label: str, raw_value: str) -> tuple[Any, Optional[str]]:
+    """驗證單一修正欄位的值，回傳 (正規化後的值, 錯誤訊息)；驗證通過時錯誤訊息為 None。"""
     if field == "meal":
         if raw_value not in _VALID_MEAL_NAMES:
-            return f"餐次僅能為：{'、'.join(_VALID_MEAL_NAMES)}"
-        value = raw_value
-    else:
+            return None, f"餐次僅能為：{'、'.join(_VALID_MEAL_NAMES)}"
+        return raw_value, None
+
+    if field == "date":
+        parsed = _parse_date(raw_value)
+        if parsed is None:
+            return None, _date_format_hint()
+        return parsed, None
+
+    try:
+        return int(raw_value), None
+    except ValueError:
         try:
-            value = int(raw_value)
+            return float(raw_value), None
         except ValueError:
-            try:
-                value = float(raw_value)
-            except ValueError:
-                return f"「{field_label}」需要輸入數字，例如「修正 {field_label} 700」"
+            return None, f"「{field_label}」需要輸入數字，例如「修正 {field_label} 700」"
+
+
+async def _handle_correct(user_key: str, args: list[str]) -> str:
+    """處理「修正 熱量 700」「修正 餐次 早餐 日期 2026/08/17」等單欄或多欄修正。
+
+    參數以「欄位 值」成對解析，全部驗證通過後才一次批次寫入，
+    避免前面幾欄已寫進 Sheet、後面某欄才發現格式錯誤而留下半套狀態。
+    """
+    if not args or len(args) % 2 != 0:
+        return (
+            "指令格式錯誤，請使用「修正 熱量 700」或「修正 餐次 午餐」或「修正 日期 2026/08/17」\n"
+            "也可以一次修正多項，例如「修正 熱量 2000 蛋白質 120」"
+        )
+
+    updates: dict[str, Any] = {}
+    changes: list[str] = []
+    for field_label, raw_value in zip(args[::2], args[1::2]):
+        field = _CORRECT_FIELD_ALIASES.get(field_label)
+        if field is None:
+            return f"不支援的欄位「{field_label}」，可用欄位：{_CORRECT_FIELD_LIST}"
+        if field in updates:
+            return f"欄位「{field_label}」重複出現，請每個欄位只指定一次"
+
+        value, error = _validate_correct_value(field, field_label, raw_value)
+        if error is not None:
+            return error
+        updates[field] = value
+        changes.append(f"{field_label} → {value}")
 
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
         return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
 
-    updated = await sheets.update_latest_daily_log_field(user["google_sheet_id"], field, value)
+    updated = await sheets.update_latest_daily_log_fields(user["google_sheet_id"], updates)
     if not updated:
         return "尚無可修正的紀錄"
 
-    if field == "meal":
-        return f"已將最近一筆紀錄的餐次修正為「{value}」"
-    return f"已將最近一筆紀錄的{field_label}修正為 {value}"
+    if len(updates) == 1:
+        field_label, value = args[0], updates[next(iter(updates))]
+        if "meal" in updates:
+            return f"已將最近一筆紀錄的餐次修正為「{value}」"
+        return f"已將最近一筆紀錄的{field_label}修正為 {value}"
+
+    return "已修正最近一筆紀錄：\n" + "\n".join(changes)
+
+
+async def _handle_delete(user_key: str) -> str:
+    """處理「刪除」指令：刪掉最近一筆 daily_log 紀錄。
+
+    刻意不做二次確認——紀錄為單筆且隨時可重新拍照補回，維護 pending 確認狀態
+    的複雜度不划算；改為在回覆中列出完整的被刪內容，讓使用者能立即察覺刪錯。
+    """
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+
+    deleted = await sheets.delete_latest_daily_log_row(user["google_sheet_id"])
+    if deleted is None:
+        return "尚無可刪除的紀錄"
+
+    return (
+        "已刪除最近一筆紀錄：\n"
+        f"{deleted['date']} {deleted['meal']} {deleted['items']}\n"
+        f"熱量 {_format_number(deleted['calories'])}｜碳水 {_format_number(deleted['carbs_g'])}g"
+        f"｜蛋白質 {_format_number(deleted['protein_g'])}g｜脂肪 {_format_number(deleted['fat_g'])}g\n"
+        "若刪錯，請重新拍照或輸入描述後傳「ok」重新記錄"
+    )
+
+
+def _format_number(value: float) -> str:
+    """daily_log 的營養素以 float 讀回，整數值去掉多餘的 .0 再顯示給使用者。"""
+    return str(int(value)) if float(value).is_integer() else str(value)
 
 
 def _extract_sheet_id(raw: str) -> str:

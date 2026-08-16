@@ -41,5 +41,12 @@ class Settings(BaseSettings):
     # M8（「圖表」/「分析」指令組出 PWA 連結）使用，GitHub Pages 公開網址，不含結尾斜線
     web_base_url: Optional[str] = None
 
+    # --- M13（Gemini 用量控管）：防止單一使用者單日耗盡 API 額度 ---
+    # Gemini 按 token 計費，且所有照片會塞進同一次 generate_content() 呼叫，
+    # 因此「ok 次數」等於 API 呼叫次數、但實際費用約與「照片總張數」成正比，
+    # 故以雙上限把每人每日的成本天花板鎖死（最壞情況 = 兩者相乘）。
+    daily_ok_limit_per_user: int = 30
+    max_photos_per_ok: int = 15
+
 
 settings = Settings()

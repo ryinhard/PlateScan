@@ -68,6 +68,7 @@
 
 - 照片不轉成 Base64，存平台提供的 **圖片代碼 (LINE: `message_id`, TG: `file_id`)**。
 - 後端引入 `asyncio.Lock()` 防止使用者連發照片時引起的競態條件。
+- `ok` 觸發辨識前會先檢查每日用量配額（同樣以 `asyncio.Lock()` 序列化計數的讀寫），超限時保留緩衝區內容不清空，見 [commands.md](commands.md) 的「Gemini 用量控管」。
 
 ---
 

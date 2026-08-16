@@ -70,6 +70,27 @@ def _build_contents(images: list[bytes], captions: list[str]) -> list[Any]:
     return contents
 
 
+def _log_usage(model_name: str, image_count: int, response: Any) -> None:
+    """記錄本次呼叫的 token 用量，供日後對照帳單回推「單張照片實際成本」，
+    據以調整 settings.daily_ok_limit_per_user／max_photos_per_ok。
+
+    usage_metadata 屬於觀測用途，取不到時（SDK 版本差異或欄位缺漏）僅略過不記，
+    絕不可讓它影響辨識結果本身。
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return
+
+    logger.info(
+        "Gemini 用量 model=%s images=%d prompt_tokens=%s output_tokens=%s total_tokens=%s",
+        model_name,
+        image_count,
+        getattr(usage, "prompt_token_count", None),
+        getattr(usage, "candidates_token_count", None),
+        getattr(usage, "total_token_count", None),
+    )
+
+
 def _parse_response(text: str) -> Optional[dict[str, Any]]:
     try:
         parsed = json.loads(text)
@@ -107,6 +128,7 @@ async def analyze_meal(images: list[bytes], captions: list[str]) -> Optional[dic
     def _generate(model_name: str) -> str:
         client = _get_client()
         response = client.models.generate_content(model=model_name, contents=contents, config=config)
+        _log_usage(model_name, len(images), response)
         return response.text
 
     try:

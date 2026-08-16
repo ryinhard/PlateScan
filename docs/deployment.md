@@ -109,11 +109,9 @@ LINE Developers Console 仍需手動將「Use webhook」切為 Enabled（無法�
 
 ## Gemini API 已知限制與因應
 
-正式環境實測期間觀察到的 Gemini 免費層 API 行為，記錄於此供之後判斷是否需要升級付費方案：
+> **目前已改用 Gemini API 付費方案**（依用量計費）。以下多數限制是在免費層實測期間觀察到的，付費後 503 過載的發生頻率應顯著下降，但相關的防護機制皆刻意保留——服務端過載與模型 ID 變動並非免費層獨有。付費後成本控管改由 `DAILY_OK_LIMIT_PER_USER`／`MAX_PHOTOS_PER_OK` 兩道上限負責，詳見 [commands.md](commands.md) 的「Gemini 用量控管」。
 
-- **主模型間歇性 503**：`gemini-flash-latest` 偶發回傳 `503 UNAVAILABLE`（服務端高流量過載），非本專案程式問題。`app/core/vision.py` 的 `analyze_meal()` 已加入單次自動降級（改打 `GEMINI_FALLBACK_MODEL` 重試一次），減緩但無法完全避免。
+- **主模型間歇性 503**：`gemini-flash-latest` 偶發回傳 `503 UNAVAILABLE`（服務端高流量過載），非本專案程式問題。`app/core/vision.py` 的 `analyze_meal()` 已加入單次自動降級（改打 `GEMINI_FALLBACK_MODEL` 重試一次）。付費方案有較高的配額與較低的過載機率，但無法保證完全不發生，故此降級機制維持啟用。
 - **特定模型 ID 對新 API Key 逐漸關閉存取**：已兩度遇到「模型仍列在 `client.models.list()`，但實際呼叫回傳 `404 NOT_FOUND: ... no longer available to new users`」的情況（`gemini-2.5-flash` → 改用 `gemini-flash-latest`；`gemini-2.5-flash-lite` → 改用 `gemini-flash-lite-latest`）。目前策略：優先選用 `-latest` 別名（不綁定特定版本號），若未來又踩到同樣問題，用同一把 `GEMINI_API_KEY` 執行 `client.models.list()` 掃描可用模型、並實際呼叫 `generate_content()` 驗證後再更換設定值。
-- **若免費層失敗頻率持續偏高，可考慮的因應方向**：
-  1. 升級為 Gemini API 付費方案（依用量計費），通常有更高的 QPM/RPD 配額與較低的過載機率。
-  2. 若付費後仍偶發 503，可評估將 `analyze_meal()` 的單次降級重試改為「主模型重試 N 次 + 降級」的組合策略（目前刻意不加程式層級 retry，避免拖長 LINE replyToken 18 秒時限）。
-  3. 持續觀察即可：低流量情境下 503 尚非高頻事件，降級機制多數情況已足夠。
+- **付費方案下的成本觀測**：`app/core/vision.py` 每次呼叫都會將 `usage_metadata`（prompt／output／總 token 數）與照片張數寫入 log。要回推實際成本，從 Cloud Run log 撈這行紀錄，對照 Google AI Studio 用量頁／帳單金額換算「單張照片的實際成本」，再據以調整 `DAILY_OK_LIMIT_PER_USER`（預設 30）與 `MAX_PHOTOS_PER_OK`（預設 15）。兩者皆為環境變數，調整後重新部署即可，不需改程式碼。
+- **若付費後仍偶發 503**：可評估將 `analyze_meal()` 的單次降級重試改為「主模型重試 N 次 + 降級」的組合策略（目前刻意不加程式層級 retry，避免拖長 LINE replyToken 18 秒時限）。低流量情境下 503 尚非高頻事件，現行的單次降級多數情況已足夠。

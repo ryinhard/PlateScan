@@ -51,6 +51,11 @@ class FakeWorksheet:
                 row.append("")
             row[target_idx] = value
 
+    def batch_update(self, data: list[dict]) -> None:
+        """模擬 gspread 的批次寫入：逐筆套用與 update() 相同的單格/單列寫入語意。"""
+        for entry in data:
+            self.update(range_name=entry["range"], values=entry["values"])
+
     def delete_rows(self, row_num: int) -> None:
         del self.rows[row_num - 1]
 
@@ -127,6 +132,86 @@ async def test_upsert_user_updates_existing_row_in_place(fake_users_ws: FakeWork
     row = fake_users_ws.rows[1]
     assert row[0] == "line:U1"
     assert row[2] == "sheet-new"
+
+
+async def test_upsert_user_preserves_daily_quota_columns(fake_users_ws: FakeWorksheet):
+    """upsert_user 只更新 B:E 欄，不得洗掉 F/G 欄的每日用量計數。"""
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-old", "TRUE", "2026/08/01", "7", "2026/08/17"]
+    )
+
+    await sheets.upsert_user("line:U1", google_sheet_id="sheet-new", display_name="小明")
+
+    row = fake_users_ws.rows[1]
+    assert row[2] == "sheet-new"
+    assert row[5] == "7"
+    assert row[6] == "2026/08/17"
+
+
+# --- 每日 Gemini 用量配額（users 工作表 F/G 欄） ---
+
+
+async def test_try_consume_daily_quota_starts_counting_from_zero(fake_users_ws: FakeWorksheet):
+    fake_users_ws.rows.append(["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01"])
+
+    allowed, used = await sheets.try_consume_daily_quota("line:U1", limit=30, today="2026/08/17")
+
+    assert (allowed, used) == (True, 1)
+    assert fake_users_ws.rows[1][5] == 1
+    assert fake_users_ws.rows[1][6] == "2026/08/17"
+
+
+async def test_try_consume_daily_quota_increments_same_day(fake_users_ws: FakeWorksheet):
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01", "3", "2026/08/17"]
+    )
+
+    allowed, used = await sheets.try_consume_daily_quota("line:U1", limit=30, today="2026/08/17")
+
+    assert (allowed, used) == (True, 4)
+    assert fake_users_ws.rows[1][5] == 4
+
+
+async def test_try_consume_daily_quota_resets_on_new_day(fake_users_ws: FakeWorksheet):
+    """跨日時計數歸零，不需另外排程重置。"""
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01", "30", "2026/08/16"]
+    )
+
+    allowed, used = await sheets.try_consume_daily_quota("line:U1", limit=30, today="2026/08/17")
+
+    assert (allowed, used) == (True, 1)
+    assert fake_users_ws.rows[1][6] == "2026/08/17"
+
+
+async def test_try_consume_daily_quota_blocks_when_limit_reached(fake_users_ws: FakeWorksheet):
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01", "30", "2026/08/17"]
+    )
+
+    allowed, used = await sheets.try_consume_daily_quota("line:U1", limit=30, today="2026/08/17")
+
+    assert (allowed, used) == (False, 30)
+    assert fake_users_ws.rows[1][5] == "30"  # 被擋下時不應再累加
+
+
+async def test_try_consume_daily_quota_allows_unknown_user(fake_users_ws: FakeWorksheet):
+    """尚未綁定（不在 users 表）的使用者一律放行，交由呼叫端的綁定檢查處理。"""
+    allowed, used = await sheets.try_consume_daily_quota("line:U404", limit=30, today="2026/08/17")
+
+    assert (allowed, used) == (True, 0)
+
+
+async def test_try_consume_daily_quota_serializes_concurrent_calls(fake_users_ws: FakeWorksheet):
+    """同一使用者同時觸發多次 ok 時，計數不可少算（rows 讀寫需被鎖序列化）。"""
+    fake_users_ws.rows.append(["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01"])
+
+    results = await asyncio.gather(
+        *(sheets.try_consume_daily_quota("line:U1", limit=30, today="2026/08/17") for _ in range(5))
+    )
+
+    assert sorted(used for _, used in results) == [1, 2, 3, 4, 5]
+    assert fake_users_ws.rows[1][5] == 5
 
 
 # --- buffer 工作表 ---
@@ -321,36 +406,76 @@ async def test_get_daily_log_rows_returns_empty_list_when_no_match(
     assert rows == []
 
 
-async def test_update_latest_daily_log_field_updates_only_last_row_numeric_field(
+async def test_update_latest_daily_log_fields_updates_only_last_row_numeric_field(
     fake_daily_log_ws: FakeWorksheet,
 ):
     fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22"])
     fake_daily_log_ws.rows.append(["2026/08/15", "午餐", "雞腿便當", "650", "80", "30", "20"])
 
-    updated = await sheets.update_latest_daily_log_field("sheet-abc", "calories", 999)
+    updated = await sheets.update_latest_daily_log_fields("sheet-abc", {"calories": 999})
 
     assert updated is True
     assert fake_daily_log_ws.rows[1][3] == "700"  # 較早的一列不受影響
     assert fake_daily_log_ws.rows[2][3] == 999  # 最後一列（最近一筆）被更新
 
 
-async def test_update_latest_daily_log_field_updates_meal_label(
+async def test_update_latest_daily_log_fields_updates_meal_label(
     fake_daily_log_ws: FakeWorksheet,
 ):
     fake_daily_log_ws.rows.append(["2026/08/15", "晚餐", "雞腿便當", "650", "80", "30", "20"])
 
-    updated = await sheets.update_latest_daily_log_field("sheet-abc", "meal", "午餐")
+    updated = await sheets.update_latest_daily_log_fields("sheet-abc", {"meal": "午餐"})
 
     assert updated is True
     assert fake_daily_log_ws.rows[1][1] == "午餐"
 
 
-async def test_update_latest_daily_log_field_returns_false_when_no_records(
+async def test_update_latest_daily_log_fields_writes_multiple_columns_at_once(
     fake_daily_log_ws: FakeWorksheet,
 ):
-    updated = await sheets.update_latest_daily_log_field("sheet-abc", "calories", 700)
+    fake_daily_log_ws.rows.append(["2026/08/15", "晚餐", "雞腿便當", "650", "80", "30", "20"])
+
+    updated = await sheets.update_latest_daily_log_fields(
+        "sheet-abc", {"date": "2026/08/17", "meal": "早餐", "calories": 2000, "protein_g": 120}
+    )
+
+    assert updated is True
+    assert fake_daily_log_ws.rows[1][0] == "2026/08/17"
+    assert fake_daily_log_ws.rows[1][1] == "早餐"
+    assert fake_daily_log_ws.rows[1][3] == 2000
+    assert fake_daily_log_ws.rows[1][5] == 120
+    assert fake_daily_log_ws.rows[1][4] == "80"  # 未指定的欄位不受影響
+
+
+async def test_update_latest_daily_log_fields_returns_false_when_no_records(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    updated = await sheets.update_latest_daily_log_fields("sheet-abc", {"calories": 700})
 
     assert updated is False
+
+
+async def test_delete_latest_daily_log_row_removes_last_row_and_returns_it(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    fake_daily_log_ws.rows.append(["2026/08/14", "晚餐", "牛肉麵", "700", "90", "35", "22", "0.8"])
+    fake_daily_log_ws.rows.append(["2026/08/15", "午餐", "雞腿便當", "650", "80", "30", "20", "0.9"])
+
+    deleted = await sheets.delete_latest_daily_log_row("sheet-abc")
+
+    assert deleted is not None
+    assert deleted["date"] == "2026/08/15"
+    assert deleted["meal"] == "午餐"
+    assert deleted["items"] == "雞腿便當"
+    assert deleted["calories"] == 650
+    assert len(fake_daily_log_ws.rows) == 2  # 表頭 + 較早的一列
+    assert fake_daily_log_ws.rows[1][0] == "2026/08/14"  # 較早的一列保留
+
+
+async def test_delete_latest_daily_log_row_returns_none_when_no_records(
+    fake_daily_log_ws: FakeWorksheet,
+):
+    assert await sheets.delete_latest_daily_log_row("sheet-abc") is None
 
 
 # --- goals 工作表（使用者個人 Sheet） ---
