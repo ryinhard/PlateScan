@@ -568,27 +568,60 @@ async def _handle_goal(user_key: str) -> str:
     return "每日營養目標：\n" + "\n".join(lines)
 
 
-async def _handle_goal_set(user_key: str, args: list[str]) -> str:
-    if len(args) != 2:
-        return "指令格式錯誤，請使用「設定目標 熱量 2000」，可用欄位：熱量、碳水、蛋白質、脂肪"
-
-    field_label, raw_value = args
-    field_info = _GOAL_FIELD_ALIASES.get(field_label)
-    if field_info is None:
-        return f"不支援的欄位「{field_label}」，可用欄位：熱量、碳水、蛋白質、脂肪"
-
-    nutrient, unit = field_info
+def _parse_goal_value(raw: str) -> Optional[Any]:
+    """目標數值優先解析為 int（避免 2000 被顯示成 2000.0），否則試 float，皆失敗回傳 None。"""
     try:
-        target: Any = int(raw_value)
+        return int(raw)
     except ValueError:
         try:
-            target = float(raw_value)
+            return float(raw)
         except ValueError:
+            return None
+
+
+async def _handle_goal_set(user_key: str, args: list[str]) -> str:
+    """處理「設定目標 熱量 2000」與一次設定多項的「設定目標 熱量 2000 蛋白質 120」。
+
+    參數以「欄位 值」成對解析（與 `修正` 多欄位同一套語意），全部驗證通過後才開始寫入，
+    避免前面幾項已寫進 goals 工作表、後面某項才發現格式錯誤而留下半套狀態。
+    PWA（web/index.html 的 copyGoalCommands()）複製出的指令即為此單行多項格式。
+    """
+    if not args or len(args) % 2 != 0:
+        return (
+            "指令格式錯誤，請使用「設定目標 熱量 2000」，可用欄位：熱量、碳水、蛋白質、脂肪\n"
+            "也可以一次設定多項，例如「設定目標 熱量 2000 蛋白質 120」"
+        )
+
+    # 每項為 (顯示用欄位標籤, goals 工作表的 nutrient 值, 單位, 目標數值)
+    updates: list[tuple[str, str, str, Any]] = []
+    seen: set[str] = set()
+    for field_label, raw_value in zip(args[::2], args[1::2]):
+        field_info = _GOAL_FIELD_ALIASES.get(field_label)
+        if field_info is None:
+            return f"不支援的欄位「{field_label}」，可用欄位：熱量、碳水、蛋白質、脂肪"
+
+        nutrient, unit = field_info
+        if nutrient in seen:
+            return f"欄位「{field_label}」重複出現，請每個欄位只指定一次"
+        seen.add(nutrient)
+
+        target = _parse_goal_value(raw_value)
+        if target is None:
             return f"「{field_label}」需要輸入數字，例如「設定目標 {field_label} 2000」"
+        updates.append((field_label, nutrient, unit, target))
 
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
         return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
 
-    await sheets.upsert_goal(user["google_sheet_id"], nutrient, target, unit)
-    return f"已將每日{field_label}目標設定為 {target}{unit}"
+    # goals 工作表為逐列 find-or-append（無批次 API），故多項時逐項寫入；
+    # 格式驗證已全部完成，此處只剩網路/API 層級的失敗可能。
+    for _, nutrient, unit, target in updates:
+        await sheets.upsert_goal(user["google_sheet_id"], nutrient, target, unit)
+
+    if len(updates) == 1:
+        field_label, _, unit, target = updates[0]
+        return f"已將每日{field_label}目標設定為 {target}{unit}"
+
+    lines = "\n".join(f"{label} {target} {unit}" for label, _, unit, target in updates)
+    return "已設定每日目標：\n" + lines

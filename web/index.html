@@ -813,16 +813,18 @@ function saveSettings() {
 }
 
 // 把畫面上調整後的目標值組成 Bot 指令供複製，貼到 Bot 送出後才會真正寫入 Sheet。
+// 刻意組成「單行多組欄位/數值」：Bot 的指令解析以第一個詞判定指令、其餘視為參數，
+// 多行訊息會被當成同一則指令的一長串參數而解析失敗，故不可用換行分隔。
 function copyGoalCommands() {
-  const commands = [];
+  const parts = [];
   for (const n of NUTRIENTS) {
     const input = document.getElementById(inputId('target', n.key));
     const value = parseFloat(input ? input.value : '');
-    if (!isNaN(value) && value > 0) commands.push(`設定目標 ${n.goalLabel} ${value}`);
+    if (!isNaN(value) && value > 0) parts.push(`${n.goalLabel} ${value}`);
   }
-  if (!commands.length) { showToast('⚠️ 請先填入至少一項目標值'); return; }
+  if (!parts.length) { showToast('⚠️ 請先填入至少一項目標值'); return; }
 
-  const text = commands.join('\n');
+  const text = `設定目標 ${parts.join(' ')}`;
   const done = () => showToast('✅ 已複製，貼到 Bot 送出才會生效');
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));

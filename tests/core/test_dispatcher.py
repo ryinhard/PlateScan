@@ -749,6 +749,8 @@ async def test_handle_text_goal_set_command_without_bound_sheet(
         "設定目標 熱量",  # 缺少數值
         "設定目標 卡路里 2000",  # 不支援的欄位
         "設定目標 熱量 abc",  # 數值非數字
+        "設定目標 熱量 2000 蛋白質",  # 多項時參數數量為奇數
+        "設定目標 熱量 2000 熱量 1800",  # 同一欄位重複指定
     ],
 )
 async def test_handle_text_goal_set_command_rejects_invalid_input(
@@ -769,6 +771,54 @@ async def test_handle_text_goal_set_command_rejects_invalid_input(
     assert spy_append == []
     assert get_user_calls == []  # 格式驗證應先於任何 I/O
     assert reply is not None and reply != ""
+
+
+async def test_handle_text_goal_set_command_accepts_multiple_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    """PWA「📋 複製指令」按鈕複製出的單行多項格式須能一次寫入全部目標。"""
+    calls: list[tuple[str, str, object, str]] = []
+
+    async def _fake_upsert_goal(google_sheet_id: str, nutrient: str, target, unit: str) -> None:
+        calls.append((google_sheet_id, nutrient, target, unit))
+
+    monkeypatch.setattr(sheets, "upsert_goal", _fake_upsert_goal)
+
+    reply = await dispatcher.handle_text(
+        "line:U1", "設定目標 熱量 2000 蛋白質 120 碳水 220 脂肪 100"
+    )
+
+    assert spy_append == []
+    assert calls == [
+        ("sheet-abc", "calories", 2000, "kcal"),
+        ("sheet-abc", "protein", 120, "g"),
+        ("sheet-abc", "carbs", 220, "g"),
+        ("sheet-abc", "fat", 100, "g"),
+    ]
+    assert reply is not None
+    assert reply.startswith("已設定每日目標：")
+    for expected in ("熱量 2000 kcal", "蛋白質 120 g", "碳水 220 g", "脂肪 100 g"):
+        assert expected in reply
+
+
+async def test_handle_text_goal_set_command_writes_nothing_when_any_field_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """多項中只要有一項驗證失敗，前面已驗證通過的項目也不可先寫入（不留半套狀態）。"""
+    calls: list[tuple[str, str, object, str]] = []
+
+    async def _fake_upsert_goal(google_sheet_id: str, nutrient: str, target, unit: str) -> None:
+        calls.append((google_sheet_id, nutrient, target, unit))
+
+    monkeypatch.setattr(sheets, "upsert_goal", _fake_upsert_goal)
+
+    reply = await dispatcher.handle_text("line:U1", "設定目標 熱量 2000 蛋白質 abc")
+
+    assert calls == []
+    assert reply is not None and "蛋白質" in reply
 
 
 # --- 「連結」指令 ---
