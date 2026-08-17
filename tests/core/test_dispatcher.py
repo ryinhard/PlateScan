@@ -474,10 +474,12 @@ async def test_handle_text_returns_fallback_reply_when_unexpected_error_occurs(
 # --- 「說明」指令 ---
 
 
+@pytest.mark.parametrize("command", ["說明", "指令", "help"])
 async def test_handle_text_help_command_returns_static_command_list(
     spy_append: list[tuple[str, str, str]],
+    command: str,
 ):
-    reply = await dispatcher.handle_text("line:U1", "說明")
+    reply = await dispatcher.handle_text("line:U1", command)
 
     assert spy_append == []  # 「說明」不應被當成一般文字暫存
     assert reply is not None and "ok" in reply and "綁定" in reply
@@ -999,7 +1001,7 @@ async def test_handle_text_goal_set_command_writes_nothing_when_any_field_invali
 # --- 「連結」指令 ---
 
 
-@pytest.mark.parametrize("command", ["連結", "原始表單", "/link"])
+@pytest.mark.parametrize("command", ["連結", "原始表單", "記錄表單", "/link"])
 async def test_handle_text_link_command_returns_sheet_edit_url(
     spy_append: list[tuple[str, str, str]],
     fake_user,

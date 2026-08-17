@@ -1,13 +1,14 @@
 """LINE Rich Menu 設定腳本（一次性工具，非後端執行期程式碼）。
 
 功能：
-1. 用 Pillow 產生 2 橫行 × 3 格的陽春文字版選單圖（2500x1686，LINE Rich Menu full 尺寸）。
+1. 讀取 `scripts/richmenu_src/menu.jpg`（美術設計圖，2 橫行 × 3 格）並縮放至
+   LINE Rich Menu full 尺寸（2500x1686）。
 2. 呼叫 LINE Rich Menu API 建立選單、上傳圖片、設為所有使用者的預設選單。
 
-只放 6 個高頻指令（ok／今日／圖表／原始表單／綁定／說明），修正、設定目標、目標、
+只放 6 個高頻指令（ok／今日／圖表／連結／綁定／說明），修正、設定目標、目標、
 取消等低頻/進階指令改用打字或 slash 指令即可，不佔選單格位。full 尺寸（1686 高）
-每格接近正方形，字體可以放更大；預設收合（selected=False），只顯示輸入框上方的
-「指令選單」拉桿，避免一進聊天室就展開佔掉手機畫面約一半。
+每格接近正方形；預設收合（selected=False），只顯示輸入框上方的「指令選單」拉桿，
+避免一進聊天室就展開佔掉手機畫面約一半。
 
 使用方式：
     python scripts/setup_line_richmenu.py --dry-run   # 只產生預覽圖，不呼叫任何 LINE API
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import settings  # noqa: E402
@@ -35,80 +36,34 @@ COLS, ROWS = 3, 2
 _COL_BOUNDARIES = [round(i * WIDTH / COLS) for i in range(COLS + 1)]
 _ROW_BOUNDARIES = [round(i * HEIGHT / ROWS) for i in range(ROWS + 1)]
 
-# 依序嘗試找可用的中文字型，找不到時請自行修改加入本機字型路徑。
-_FONT_CANDIDATES = [
-    "C:/Windows/Fonts/msjh.ttc",
-    "C:/Windows/Fonts/mingliu.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+_SOURCE_IMAGE_PATH = Path(__file__).resolve().parent / "richmenu_src" / "menu.jpg"
+
+# 對應 app.core.dispatcher 的指令別名：實際點擊按鈕後送出的訊息文字，由左到右、
+# 由上到下對應 scripts/richmenu_src/menu.jpg 六宮格畫面上依序印的
+# 「OK／今日營養／圖表」「記錄表單／綁定／指令」。
+# 「今日營養」「綁定」畫面標籤與送出文字不同（分別對應「今日」與樣板文字
+# 「綁定 {Sheet ID}」——後者讓 _handle_set() 的佔位符判斷接住並導向引導訊息，
+# 見 app/core/dispatcher.py 的 _is_placeholder()）；「記錄表單」「指令」則已在
+# dispatcher._EXACT_COMMAND_ALIASES 新增對應別名，讓送出文字與畫面標籤完全一致。
+_ACTION_TEXTS = [
+    "ok",
+    "今日",
+    "圖表",
+    "記錄表單",
+    "綁定 {Sheet ID}",
+    "指令",
 ]
 
-# 對應 app.core.dispatcher 的指令別名，三元組為 (顯示標籤, 副標, 實際送出的訊息文字)。
-# 多數按鈕的顯示標籤與送出文字相同；「綁定」是唯一例外——顯示短標籤「綁定」維持排版，
-# 但實際送出完整的「綁定 {Sheet ID}」樣板文字，讓 _handle_set() 的佔位符判斷接住並
-# 導向引導訊息（見 app/core/dispatcher.py 的 _is_placeholder()），按鈕文字同時兼作語法示範。
-# 指令本身若缺少參數，dispatcher 會回覆格式說明，等同於一個輕量的操作導引。
-# 「原始表單」是「連結」指令的別名（見 dispatcher._EXACT_COMMAND_ALIASES），
-# 選用這個按鈕文字是為了跟「圖表」（PWA 視覺化儀表板）明確區分開來。
-_BUTTONS = [
-    ("ok", "結束辨識", "ok"),
-    ("今日", "查詢累計", "今日"),
-    ("圖表", "儀表板連結", "圖表"),
-    ("原始表單", "Sheet 原始檔", "原始表單"),
-    ("綁定", "綁定 Sheet", "綁定 {Sheet ID}"),
-    ("說明", "指令列表", "說明"),
-]
 
-_BG_COLORS = ["#F4F1EA", "#E8E2D5"]  # 交錯棋盤格底色，方便肉眼區分格子
-_TEXT_COLOR = "#2B2B2B"
-_BORDER_COLOR = "#C9C2B2"
-
-
-def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    for path in _FONT_CANDIDATES:
-        if Path(path).exists():
-            return ImageFont.truetype(path, size)
-    raise FileNotFoundError("找不到可用的中文字型，請修改 _FONT_CANDIDATES 加入本機字型路徑")
-
-
-def generate_image() -> Image.Image:
-    """產生 2 橫行 × 3 格陽春文字版選單圖，之後可直接替換為美術設計圖（維持同樣的按鈕座標即可）。"""
-    image = Image.new("RGB", (WIDTH, HEIGHT), "#FFFFFF")
-    draw = ImageDraw.Draw(image)
-    label_font = _load_font(110)
-    sub_font = _load_font(48)
-
-    for idx, (label, subtitle, _action_text) in enumerate(_BUTTONS):
-        row, col = divmod(idx, COLS)
-        x0, x1 = _COL_BOUNDARIES[col], _COL_BOUNDARIES[col + 1]
-        y0, y1 = _ROW_BOUNDARIES[row], _ROW_BOUNDARIES[row + 1]
-        cell_w, cell_h = x1 - x0, y1 - y0
-
-        draw.rectangle([x0, y0, x1, y1], fill=_BG_COLORS[idx % 2], outline=_BORDER_COLOR, width=4)
-
-        label_bbox = draw.textbbox((0, 0), label, font=label_font)
-        label_w, label_h = label_bbox[2] - label_bbox[0], label_bbox[3] - label_bbox[1]
-        draw.text(
-            (x0 + (cell_w - label_w) / 2, y0 + cell_h / 2 - label_h * 1.1),
-            label,
-            font=label_font,
-            fill=_TEXT_COLOR,
-        )
-
-        sub_bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
-        sub_w = sub_bbox[2] - sub_bbox[0]
-        draw.text(
-            (x0 + (cell_w - sub_w) / 2, y0 + cell_h / 2 + label_h * 0.3),
-            subtitle,
-            font=sub_font,
-            fill=_TEXT_COLOR,
-        )
-
-    return image
+def load_image() -> Image.Image:
+    """讀取美術設計圖並縮放至 LINE Rich Menu full 尺寸（2500x1686）。"""
+    image = Image.open(_SOURCE_IMAGE_PATH).convert("RGB")
+    return image.resize((WIDTH, HEIGHT), Image.LANCZOS)
 
 
 def _build_areas() -> list[dict]:
     areas = []
-    for idx, (_label, _subtitle, action_text) in enumerate(_BUTTONS):
+    for idx, action_text in enumerate(_ACTION_TEXTS):
         row, col = divmod(idx, COLS)
         x0, x1 = _COL_BOUNDARIES[col], _COL_BOUNDARIES[col + 1]
         y0, y1 = _ROW_BOUNDARIES[row], _ROW_BOUNDARIES[row + 1]
@@ -147,10 +102,10 @@ def create_and_publish(image: Image.Image) -> str:
         rich_menu_id = create_resp.json()["richMenuId"]
 
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
+        image.save(buffer, format="JPEG", quality=90)
         upload_resp = client.post(
             f"https://api-data.line.me/v2/bot/richmenu/{rich_menu_id}/content",
-            headers={**_headers(), "Content-Type": "image/png"},
+            headers={**_headers(), "Content-Type": "image/jpeg"},
             content=buffer.getvalue(),
         )
         upload_resp.raise_for_status()
@@ -173,7 +128,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    image = generate_image()
+    image = load_image()
 
     if args.dry_run:
         preview_path = Path(__file__).resolve().parent / "richmenu_preview.png"

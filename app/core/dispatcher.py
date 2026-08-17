@@ -52,11 +52,11 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "ok": frozenset({"ok"}),
     "today": frozenset({"今日", "today"}),
     "chart": frozenset({"圖表", "分析", "chart"}),
-    "link": frozenset({"連結", "原始表單", "link"}),
+    "link": frozenset({"連結", "原始表單", "記錄表單", "link"}),
     "goal_query": frozenset({"目標", "goal"}),
     "cancel": frozenset({"取消", "cancel"}),
     "delete": frozenset({"刪除", "delete"}),
-    "help": frozenset({"說明", "help"}),
+    "help": frozenset({"說明", "指令", "help"}),
     "onboarding": frozenset({"新手教學", "教學", "start"}),
 }
 
