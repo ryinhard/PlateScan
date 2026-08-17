@@ -1535,6 +1535,7 @@ def test_determine_meal_respects_custom_schedule():
     [
         ("17:30", 17 * 60 + 30),
         ("17：30", 17 * 60 + 30),  # 全形冒號
+        ("17.30", 17 * 60 + 30),  # 句號（與 _parse_date 接受 2026.08.17 的容錯標準對齊）
         ("1730", 17 * 60 + 30),  # 無冒號四位數
         ("930", 9 * 60 + 30),  # 無冒號三位數 = 09:30
         ("17", 17 * 60),  # 純整點
@@ -1599,6 +1600,24 @@ async def test_handle_text_meal_set_command_updates_single_field(
     assert calls == [("line:U1", "05:00,11:30,14:00,18:00,21:00")]
     assert reply is not None and reply.startswith("已更新餐次時段：")
     assert "晚餐 18:00 – 20:59" in reply
+
+
+async def test_handle_text_meal_set_command_accepts_dot_separated_time(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """句號寫法（17.30）須與日期的 2026.08.17 一致地被接受，不可只有日期收句號。"""
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 17.30")
+
+    assert calls == [("line:U1", "05:00,11:30,14:00,17:30,21:00")]
+    assert reply is not None and reply.startswith("已更新餐次時段：")
 
 
 async def test_handle_text_meal_set_command_accepts_multiple_fields(

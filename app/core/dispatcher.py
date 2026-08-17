@@ -252,9 +252,12 @@ def _parse_time_token(raw: str) -> Optional[int]:
     """將使用者輸入的時間字串解析為分鐘數（0~1439），無法解析時回傳 None。
 
     必須全部相容：半形冒號 17:30、全形冒號 17：30（手機中文輸入法容易誤打）、
-    無冒號四位數 1730、無冒號三位數 930（＝09:30）、純整點 17（＝17:00）。
+    句號 17.30、無冒號四位數 1730、無冒號三位數 930（＝09:30）、純整點 17（＝17:00）。
+
+    句號寫法是為了與 _parse_date() 的容錯標準對齊——該處的 _DATE_SEPARATOR_PATTERN
+    已接受 2026.08.17，同一支 Bot 不應該日期收句號、時間卻不收。
     """
-    text = raw.strip().replace(_FULLWIDTH_COLON, ":")
+    text = raw.strip().replace(_FULLWIDTH_COLON, ":").replace(".", ":")
 
     if ":" in text:
         parts = text.split(":")
