@@ -28,6 +28,8 @@ _BOT_COMMANDS = [
     {"command": "set", "description": "綁定/更換個人 Google Sheet，例：/set {Sheet ID}"},
     {"command": "setgoal", "description": "設定每日營養目標，例：/setgoal 熱量 2000"},
     {"command": "goal", "description": "查詢每日營養目標"},
+    {"command": "setmeal", "description": "設定各餐次的開始時間，例：/setmeal 晚餐 17:30"},
+    {"command": "meal", "description": "查詢目前餐次時段"},
     {"command": "cancel", "description": "清空目前緩衝區"},
     {"command": "help", "description": "顯示指令說明"},
 ]

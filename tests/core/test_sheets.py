@@ -109,7 +109,18 @@ async def test_get_user_parses_matching_row(fake_users_ws: FakeWorksheet):
         "google_sheet_id": "sheet-abc",
         "is_active": True,
         "created_at": "2026/08/14",
+        "meal_schedule": "",
     }
+
+
+async def test_get_user_parses_meal_schedule_column(fake_users_ws: FakeWorksheet):
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/14", "7", "2026/08/17", "05:00,11:30,14:00,17:30,21:00"]
+    )
+
+    user = await sheets.get_user("line:U1")
+
+    assert user["meal_schedule"] == "05:00,11:30,14:00,17:30,21:00"
 
 
 async def test_upsert_user_appends_new_row_when_absent(fake_users_ws: FakeWorksheet):
@@ -212,6 +223,29 @@ async def test_try_consume_daily_quota_serializes_concurrent_calls(fake_users_ws
 
     assert sorted(used for _, used in results) == [1, 2, 3, 4, 5]
     assert fake_users_ws.rows[1][5] == 5
+
+
+# --- 自訂餐次時段（users 工作表 H 欄） ---
+
+
+async def test_upsert_meal_schedule_writes_h_column_only(fake_users_ws: FakeWorksheet):
+    fake_users_ws.rows.append(
+        ["line:U1", "小明", "sheet-abc", "TRUE", "2026/08/01", "7", "2026/08/17"]
+    )
+
+    await sheets.upsert_meal_schedule("line:U1", "05:00,11:30,14:00,17:30,21:00")
+
+    row = fake_users_ws.rows[1]
+    assert row[7] == "05:00,11:30,14:00,17:30,21:00"
+    # 不得動到 B:E（display_name/google_sheet_id/is_active/created_at）與 F/G（用量計數）欄
+    assert row[1:7] == ["小明", "sheet-abc", "TRUE", "2026/08/01", "7", "2026/08/17"]
+
+
+async def test_upsert_meal_schedule_skips_unknown_user(fake_users_ws: FakeWorksheet):
+    """尚未綁定（不在 users 表）的使用者略過寫入，交由呼叫端的綁定檢查處理。"""
+    await sheets.upsert_meal_schedule("line:U404", "05:00,11:30,14:00,17:30,21:00")
+
+    assert len(fake_users_ws.rows) == 1  # 只有表頭列，未新增任何列
 
 
 # --- buffer 工作表 ---

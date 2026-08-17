@@ -137,11 +137,67 @@ async def test_handle_text_ok_command_downloads_photos_and_calls_gemini(
     assert items == "雞腿便當"
     assert (calories, carbs_g, protein_g, fat_g) == (650, 80, 30, 20)
     assert confidence == 0.85
-    assert meal in {"早餐", "午餐", "晚餐", "宵夜"}
+    assert meal in {"早餐", "午餐", "下午茶", "晚餐", "宵夜"}
 
     assert reply is not None
     assert "雞腿便當" in reply
     assert "650" in reply
+
+
+async def test_handle_text_ok_command_uses_user_meal_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+):
+    """_handle_ok() 須將 user.meal_schedule 解析後傳給 _determine_meal()，而非永遠使用預設時段。"""
+
+    async def _fake_get_user(user_key: str):
+        return {
+            "user_key": user_key,
+            "display_name": "小明",
+            "google_sheet_id": "sheet-abc",
+            "is_active": True,
+            "created_at": "2026/08/14",
+            "meal_schedule": "06:00,12:00,15:00,18:00,22:00",
+        }
+
+    async def _fake_get_buffer_items(user_key: str):
+        return [{"user_key": user_key, "item_type": "text", "content": "雞腿便當"}]
+
+    async def _fake_analyze_meal(images, captions):
+        return {
+            "cot_reasoning": "",
+            "confidence_score": 0.5,
+            "items": [{"name": "雞腿便當", "calories": 650, "carbs_g": 80, "protein_g": 30, "fat_g": 20}],
+        }
+
+    append_log_calls: list[tuple] = []
+
+    async def _fake_append_daily_log(
+        google_sheet_id, date, meal, items, calories, carbs_g, protein_g, fat_g, confidence=0
+    ):
+        append_log_calls.append((date, meal))
+
+    async def _fake_clear_buffer(user_key: str) -> None:
+        pass
+
+    determine_meal_calls: list[list[int]] = []
+    real_determine_meal = dispatcher._determine_meal
+
+    def _spy_determine_meal(now, starts=None):
+        determine_meal_calls.append(starts)
+        return real_determine_meal(now, starts)
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "get_buffer_items", _fake_get_buffer_items)
+    monkeypatch.setattr(sheets, "clear_buffer", _fake_clear_buffer)
+    monkeypatch.setattr(sheets, "append_daily_log", _fake_append_daily_log)
+    monkeypatch.setattr(vision, "analyze_meal", _fake_analyze_meal)
+    monkeypatch.setattr(dispatcher, "_determine_meal", _spy_determine_meal)
+
+    await dispatcher.handle_text("line:U1", "ok")
+
+    assert determine_meal_calls == [[6 * 60, 12 * 60, 15 * 60, 18 * 60, 22 * 60]]
+    assert len(append_log_calls) == 1
 
 
 async def test_handle_text_ok_command_without_bound_sheet_skips_write(
@@ -372,6 +428,25 @@ async def test_handle_text_correct_command_updates_meal_label(
 
     assert calls == [("sheet-abc", {"meal": "午餐"})]
     assert reply is not None and "午餐" in reply
+
+
+async def test_handle_text_correct_command_normalizes_meal_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """「消夜」須正規化為「宵夜」寫入 Sheet，且回覆文字顯示的是正規化後的值。"""
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
+        return True
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
+
+    reply = await dispatcher.handle_text("line:U1", "修正 餐次 消夜")
+
+    assert calls == [("sheet-abc", {"meal": "宵夜"})]
+    assert reply == "已將最近一筆紀錄的餐次修正為「宵夜」"
 
 
 async def test_handle_text_correct_command_without_bound_sheet(
@@ -1400,3 +1475,379 @@ async def test_ok_command_passes_configured_limit_and_taipei_date_to_quota(
 
     today = datetime.now(dispatcher._TAIPEI_TZ).strftime("%Y/%m/%d")
     assert stub_daily_quota == [("line:U1", 30, today)]
+
+
+# --- 餐次時段判定（_determine_meal，純函式，含端點與跨午夜位移） ---
+
+
+@pytest.mark.parametrize(
+    "hour, minute, expected_meal",
+    [
+        (5, 0, "早餐"),
+        (11, 29, "早餐"),
+        (11, 30, "午餐"),
+        (13, 59, "午餐"),
+        (14, 0, "下午茶"),
+        (17, 29, "下午茶"),
+        (17, 30, "晚餐"),
+        (20, 59, "晚餐"),
+        (21, 0, "宵夜"),
+        (23, 59, "宵夜"),
+    ],
+)
+def test_determine_meal_default_schedule_boundaries(hour: int, minute: int, expected_meal: str):
+    from datetime import datetime as dt
+
+    now = dt(2026, 8, 17, hour, minute)
+
+    meal, day_offset = dispatcher._determine_meal(now)
+
+    assert (meal, day_offset) == (expected_meal, 0)
+
+
+@pytest.mark.parametrize("hour, minute", [(0, 0), (4, 59), (2, 30)])
+def test_determine_meal_before_breakfast_is_previous_day_late_night(hour: int, minute: int):
+    from datetime import datetime as dt
+
+    now = dt(2026, 8, 17, hour, minute)
+
+    meal, day_offset = dispatcher._determine_meal(now)
+
+    assert (meal, day_offset) == ("宵夜", -1)
+
+
+def test_determine_meal_respects_custom_schedule():
+    from datetime import datetime as dt
+
+    custom_starts = [6 * 60, 12 * 60, 15 * 60, 18 * 60, 22 * 60]  # 06:00/12:00/15:00/18:00/22:00
+
+    # 預設時段下 05:30 屬於早餐，但自訂時段的早餐從 06:00 才開始 → 應歸為前一日宵夜
+    meal, day_offset = dispatcher._determine_meal(dt(2026, 8, 17, 5, 30), custom_starts)
+
+    assert (meal, day_offset) == ("宵夜", -1)
+
+
+# --- 時間字串解析（_parse_time_token） ---
+
+
+@pytest.mark.parametrize(
+    "raw, expected_minutes",
+    [
+        ("17:30", 17 * 60 + 30),
+        ("17：30", 17 * 60 + 30),  # 全形冒號
+        ("1730", 17 * 60 + 30),  # 無冒號四位數
+        ("930", 9 * 60 + 30),  # 無冒號三位數 = 09:30
+        ("17", 17 * 60),  # 純整點
+        ("00:00", 0),
+        ("23:59", 23 * 60 + 59),
+    ],
+)
+def test_parse_time_token_accepts_all_required_formats(raw: str, expected_minutes: int):
+    assert dispatcher._parse_time_token(raw) == expected_minutes
+
+
+@pytest.mark.parametrize("raw", ["24:00", "12:60", "abc", "2500", "", "12:3:4"])
+def test_parse_time_token_rejects_invalid_input(raw: str):
+    assert dispatcher._parse_time_token(raw) is None
+
+
+# --- 自訂時間表解析（_parse_meal_schedule，空白/不合法內容一律回退預設值） ---
+
+
+def test_parse_meal_schedule_returns_default_when_blank():
+    assert dispatcher._parse_meal_schedule("") == dispatcher._DEFAULT_MEAL_STARTS
+    assert dispatcher._parse_meal_schedule(None) == dispatcher._DEFAULT_MEAL_STARTS
+
+
+def test_parse_meal_schedule_parses_valid_custom_string():
+    assert dispatcher._parse_meal_schedule("06:00,12:00,15:00,18:00,22:00") == [
+        360, 720, 900, 1080, 1320,
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "05:00,11:30,14:00,17:30",  # 少於五段
+        "05:00,11:30,14:00,17:30,21:00,23:00",  # 多於五段
+        "05:00,abc,14:00,17:30,21:00",  # 內含無法解析的時間
+        "12:00,05:00,14:00,17:30,21:00",  # 非嚴格遞增
+    ],
+)
+def test_parse_meal_schedule_falls_back_to_default_on_malformed_input(raw: str):
+    assert dispatcher._parse_meal_schedule(raw) == dispatcher._DEFAULT_MEAL_STARTS
+
+
+# --- 「設定餐次」指令 ---
+
+
+async def test_handle_text_meal_set_command_updates_single_field(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 18:00")
+
+    assert spy_append == []
+    assert calls == [("line:U1", "05:00,11:30,14:00,18:00,21:00")]
+    assert reply is not None and reply.startswith("已更新餐次時段：")
+    assert "晚餐 18:00 – 20:59" in reply
+
+
+async def test_handle_text_meal_set_command_accepts_multiple_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 18:00 宵夜 22:00")
+
+    assert calls == [("line:U1", "05:00,11:30,14:00,18:00,22:00")]
+    assert reply is not None
+    assert "晚餐 18:00 – 21:59" in reply
+    assert "宵夜 22:00 – 04:59（跨午夜）" in reply
+
+
+async def test_handle_text_meal_set_command_reset_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 預設")
+
+    assert calls == [("line:U1", "")]
+    assert reply is not None and reply.startswith("已還原成預設餐次時段：")
+    assert "早餐 05:00 – 11:29" in reply
+
+
+async def test_handle_text_meal_set_command_normalizes_meal_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 消夜 22:00")
+
+    assert calls == [("line:U1", "05:00,11:30,14:00,17:30,22:00")]
+    assert reply is not None and "宵夜 22:00 – 04:59（跨午夜）" in reply
+
+
+async def test_handle_text_meal_set_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 18:00")
+
+    assert reply is not None and "綁定" in reply
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "設定餐次",  # 無參數
+        "設定餐次 晚餐",  # 參數落單
+        "設定餐次 晚餐 18:00 宵夜",  # 多項時參數落單
+    ],
+)
+async def test_handle_text_meal_set_command_rejects_missing_or_odd_args(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+):
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return {"google_sheet_id": "sheet-abc"}
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", text)
+
+    assert get_user_calls == []  # 格式驗證應先於任何 I/O
+    assert reply is not None and "設定餐次 晚餐 17:30" in reply
+
+
+async def test_handle_text_meal_set_command_rejects_unsupported_meal_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return {"google_sheet_id": "sheet-abc"}
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 點心 15:00")
+
+    assert get_user_calls == []
+    assert reply == "不支援的餐次「點心」，可設定的餐次：早餐、午餐、下午茶、晚餐、宵夜"
+
+
+async def test_handle_text_meal_set_command_rejects_duplicate_meal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return {"google_sheet_id": "sheet-abc"}
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 18:00 晚餐 19:00")
+
+    assert get_user_calls == []
+    assert reply == "餐次「晚餐」重複出現，請每個餐次只指定一次"
+
+
+async def test_handle_text_meal_set_command_rejects_invalid_time_format(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    get_user_calls: list[str] = []
+
+    async def _fake_get_user(user_key: str):
+        get_user_calls.append(user_key)
+        return {"google_sheet_id": "sheet-abc"}
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 abc")
+
+    assert get_user_calls == []
+    assert reply is not None
+    assert "「晚餐」的時間格式無法辨識" in reply
+
+
+async def test_handle_text_meal_set_command_rejects_order_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    """順序衝突驗證需要目前時間表當基準，故必須在 get_user() 之後才能判斷。"""
+    upsert_calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        upsert_calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 午餐 18:00")
+
+    assert upsert_calls == []  # 驗證失敗不應寫入
+    assert reply == (
+        "時段順序不對：「午餐 18:00」不能晚於「下午茶 14:00」\n"
+        "五個餐次的開始時間由早到晚：早餐→午餐→下午茶→晚餐→宵夜\n"
+        "可輸入「餐次」查看目前設定，或一次調整多項：「設定餐次 午餐 11:30 下午茶 14:00」"
+    )
+
+
+async def test_handle_text_meal_set_command_partial_update_preserves_other_meals(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """只給部分餐次時，其餘餐次沿用目前設定（含已自訂過的時段）。"""
+
+    async def _fake_get_user(user_key: str):
+        return {
+            "google_sheet_id": "sheet-abc",
+            "meal_schedule": "06:00,12:00,15:00,18:00,22:00",
+        }
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+        calls.append((user_key, schedule_str))
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_meal_schedule", _fake_upsert_meal_schedule)
+
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 晚餐 19:00")
+
+    assert calls == [("line:U1", "06:00,12:00,15:00,19:00,22:00")]
+    assert reply is not None and "早餐 06:00" in reply
+
+
+# --- 「餐次」查詢指令 ---
+
+
+async def test_handle_text_meal_query_command_returns_default_schedule(
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    reply = await dispatcher.handle_text("line:U1", "餐次")
+
+    assert spy_append == []
+    assert reply == (
+        "目前餐次時段：\n"
+        "早餐 05:00 – 11:29\n"
+        "午餐 11:30 – 13:59\n"
+        "下午茶 14:00 – 17:29\n"
+        "晚餐 17:30 – 20:59\n"
+        "宵夜 21:00 – 04:59（跨午夜）\n"
+        "早餐時段以前的紀錄會歸類在前一日的宵夜\n"
+        "輸入「設定餐次 晚餐 17:30」可調整"
+    )
+
+
+async def test_handle_text_meal_query_command_reflects_custom_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return {
+            "google_sheet_id": "sheet-abc",
+            "meal_schedule": "06:00,12:00,15:00,18:00,22:00",
+        }
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "meal")
+
+    assert reply is not None and "早餐 06:00 – 11:59" in reply
+
+
+async def test_handle_text_meal_query_command_without_bound_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_get_user(user_key: str):
+        return None
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+
+    reply = await dispatcher.handle_text("line:U1", "餐次")
+
+    assert reply is not None and "綁定" in reply
+
+
+async def test_meal_set_command_does_not_shadow_set_sheet_command():
+    """「設定餐次」須走 meal_set 分支，不可被 set_sheet 的「設定」別名吃掉
+    （即使 set_sheet 會把「設定餐次 abc 17:00」誤判成 Sheet ID，也不該執行到那裡）。
+    """
+    reply = await dispatcher.handle_text("line:U1", "設定餐次 abc 17:00")
+
+    assert reply == "不支援的餐次「abc」，可設定的餐次：早餐、午餐、下午茶、晚餐、宵夜"

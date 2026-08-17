@@ -34,6 +34,8 @@ _HELP_TEXT = (
     "●刪除（/delete）→ 刪除最近一筆紀錄\n"
     "●設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
     "●目標（/goal）→ 查詢每日營養目標\n"
+    "●設定餐次 晚餐 17:30（/setmeal）→ 設定各餐次的開始時間\n"
+    "●餐次（/meal）→ 查詢目前餐次時段\n"
     "●說明（/help）→ 顯示本列表"
 )
 
@@ -60,14 +62,18 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "help": frozenset({"說明", "指令", "help"}),
     "fixhelp": frozenset({"修正範例", "fixhelp"}),
     "onboarding": frozenset({"新手教學", "教學", "start"}),
+    "meal_query": frozenset({"餐次", "meal"}),
 }
 
 # 需要額外參數的指令：僅比對第一個詞，其餘視為參數（例如「修正 熱量 700」）。
 # 「設定目標」須排在別名集合中優先於「設定」比對（兩者是不同的完整詞，不會互相前綴衝突）。
+# 「meal_set」必須排在「set_sheet」之前：set_sheet 的別名含「設定」，順序錯了
+# 「設定餐次 晚餐 17:30」會被當成綁定指令吃掉（靜默走錯分支、不會報錯）。
 _PREFIX_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "correct": frozenset({"修正", "fix"}),
     "correct_date": frozenset({"修改日期", "setdate"}),
     "goal_set": frozenset({"設定目標", "setgoal"}),
+    "meal_set": frozenset({"設定餐次", "setmeal"}),
     "set_sheet": frozenset({"綁定", "設定", "set"}),
 }
 
@@ -155,13 +161,12 @@ _CORRECT_FIELD_ALIASES = {
     "餐次": "meal",
     "日期": "date",
 }
-_VALID_MEAL_NAMES = {"早餐", "午餐", "晚餐", "宵夜"}
 _CORRECT_FIELD_LIST = "、".join(_CORRECT_FIELD_ALIASES)
 
 _FIXHELP_TEXT = (
     "修正指令範例：\n"
     "修正 熱量 700 → 修正熱量\n"
-    "修正 餐次 午餐 → 修正餐次（早餐/午餐/晚餐/宵夜）\n"
+    "修正 餐次 午餐 → 修正餐次（早餐/午餐/下午茶/晚餐/宵夜）\n"
     "修正 日期 2026/08/17 → 修正日期（等同「修改日期 2026/08/17」）\n"
     "修正 熱量 700 蛋白質 30 → 一次修正多項\n"
     f"可用欄位：{_CORRECT_FIELD_LIST}"
@@ -222,20 +227,113 @@ _GOAL_FIELD_ALIASES: dict[str, tuple[str, str]] = {
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-# 依觸發 ok 指令當下的時段判斷餐次名稱（含端點時分別為 05:00~10:59 早餐、
-# 11:00~16:59 午餐、17:00~21:59 晚餐，其餘時段歸類為宵夜）。
-_MEAL_TIME_RANGES = [
-    (5, 10, "早餐"),
-    (11, 16, "午餐"),
-    (17, 21, "晚餐"),
-]
+# 五種餐次固定名稱與順序（早到晚），數量與名稱不開放自訂，只開放時間邊界
+# （見 TODO.md M17：名稱若可變，daily_log 的 meal 值會變成不穩定集合，
+# 前端分組／配色／「修正 餐次」驗證都要跟著改成動態，複雜度不划算）。
+_MEAL_NAMES = ["早餐", "午餐", "下午茶", "晚餐", "宵夜"]
+_VALID_MEAL_NAMES = set(_MEAL_NAMES)
+
+# 「消夜」是「宵夜」的異體寫法，僅此一組別名（不擅自擴充，見 TODO.md M17 說明）。
+_MEAL_NAME_ALIASES = {"消夜": "宵夜"}
+
+# 預設餐次起點（分鐘制，只設定「開始時間」，結束時間自動接下一段的開始時間往前一分鐘，
+# 因此不可能產生空隙或重疊）：早餐 05:00／午餐 11:30／下午茶 14:00／晚餐 17:30／宵夜 21:00。
+_DEFAULT_MEAL_STARTS = [5 * 60, 11 * 60 + 30, 14 * 60, 17 * 60 + 30, 21 * 60]
+
+_FULLWIDTH_COLON = "："
 
 
-def _determine_meal(now: datetime) -> str:
-    for start_hour, end_hour, meal_name in _MEAL_TIME_RANGES:
-        if start_hour <= now.hour <= end_hour:
-            return meal_name
-    return "宵夜"
+def _normalize_meal_name(raw: str) -> str:
+    """套用「消夜→宵夜」別名表（比對前先 strip()）；非別名時原樣回傳待驗證。"""
+    return _MEAL_NAME_ALIASES.get(raw.strip(), raw.strip())
+
+
+def _parse_time_token(raw: str) -> Optional[int]:
+    """將使用者輸入的時間字串解析為分鐘數（0~1439），無法解析時回傳 None。
+
+    必須全部相容：半形冒號 17:30、全形冒號 17：30（手機中文輸入法容易誤打）、
+    無冒號四位數 1730、無冒號三位數 930（＝09:30）、純整點 17（＝17:00）。
+    """
+    text = raw.strip().replace(_FULLWIDTH_COLON, ":")
+
+    if ":" in text:
+        parts = text.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            return None
+        hour, minute = int(parts[0]), int(parts[1])
+    elif text.isdigit() and 1 <= len(text) <= 4:
+        if len(text) >= 3:
+            hour, minute = int(text[:-2]), int(text[-2:])
+        else:
+            hour, minute = int(text), 0
+    else:
+        return None
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def _format_minutes(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _format_meal_schedule(starts: list[int]) -> str:
+    """五個起點分鐘數 → 存入 users 工作表 H 欄的逗號字串（如 05:00,11:30,14:00,17:30,21:00）。"""
+    return ",".join(_format_minutes(minutes) for minutes in starts)
+
+
+def _parse_meal_schedule(schedule_str: Optional[str]) -> list[int]:
+    """users 工作表 H 欄的逗號字串 → 五個起點分鐘數；空白或內容不合法時回傳預設值。"""
+    if not schedule_str or not schedule_str.strip():
+        return list(_DEFAULT_MEAL_STARTS)
+
+    tokens = schedule_str.split(",")
+    if len(tokens) != 5:
+        return list(_DEFAULT_MEAL_STARTS)
+
+    starts: list[int] = []
+    for token in tokens:
+        minutes = _parse_time_token(token)
+        if minutes is None:
+            return list(_DEFAULT_MEAL_STARTS)
+        starts.append(minutes)
+
+    for i in range(1, 5):
+        if starts[i] <= starts[i - 1]:
+            return list(_DEFAULT_MEAL_STARTS)
+
+    return starts
+
+
+def _format_schedule_table(starts: list[int]) -> str:
+    """組出五行「{餐次} {起} – {迄}」，宵夜該行標註（跨午夜）。"""
+    lines = []
+    for i, name in enumerate(_MEAL_NAMES):
+        end_minutes = starts[(i + 1) % 5] - 1
+        if end_minutes < 0:
+            end_minutes += 24 * 60
+        line = f"{name} {_format_minutes(starts[i])} – {_format_minutes(end_minutes)}"
+        if name == "宵夜":
+            line += "（跨午夜）"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _determine_meal(now: datetime, starts: Optional[list[int]] = None) -> tuple[str, int]:
+    """依分鐘制時間表判斷餐次，回傳 (餐次名稱, 日期位移天數)。
+
+    早餐起點同時是「一天的分界線」：判定為宵夜且當下時間早於早餐起點時
+    （凌晨、尚未到今天的早餐時段），位移 -1 天（歸為前一日的宵夜）。
+    """
+    if starts is None:
+        starts = _DEFAULT_MEAL_STARTS
+
+    now_minutes = now.hour * 60 + now.minute
+    for i in range(4, -1, -1):
+        if now_minutes >= starts[i]:
+            return _MEAL_NAMES[i], 0
+    return _MEAL_NAMES[4], -1
 
 
 async def handle_photo(user_key: str, photo_id: str) -> None:
@@ -325,6 +423,12 @@ async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
     if command == "delete":
         return await _handle_delete(user_key)
 
+    if command == "meal_set":
+        return await _handle_meal_set(user_key, args)
+
+    if command == "meal_query":
+        return await _handle_meal_query(user_key)
+
     if command == "set_sheet":
         return await _handle_set(user_key, args)
 
@@ -395,8 +499,9 @@ async def _handle_ok(user_key: str) -> Optional[str]:
 
     result_items = result["items"]
     now = datetime.now(_TAIPEI_TZ)
-    date = now.strftime("%Y/%m/%d")
-    meal = _determine_meal(now)
+    starts = _parse_meal_schedule(user.get("meal_schedule", ""))
+    meal, day_offset = _determine_meal(now, starts)
+    date = (now + timedelta(days=day_offset)).strftime("%Y/%m/%d")
     item_names = "、".join(item.get("name", "") for item in result_items)
     calories = sum(item.get("calories", 0) for item in result_items)
     carbs_g = sum(item.get("carbs_g", 0) for item in result_items)
@@ -468,9 +573,10 @@ async def _handle_link(user_key: str) -> str:
 def _validate_correct_value(field: str, field_label: str, raw_value: str) -> tuple[Any, Optional[str]]:
     """驗證單一修正欄位的值，回傳 (正規化後的值, 錯誤訊息)；驗證通過時錯誤訊息為 None。"""
     if field == "meal":
-        if raw_value not in _VALID_MEAL_NAMES:
-            return None, f"餐次僅能為：{'、'.join(_VALID_MEAL_NAMES)}"
-        return raw_value, None
+        normalized = _normalize_meal_name(raw_value)
+        if normalized not in _VALID_MEAL_NAMES:
+            return None, f"餐次僅能為：{'、'.join(_MEAL_NAMES)}"
+        return normalized, None
 
     if field == "date":
         parsed = _parse_date(raw_value)
@@ -689,3 +795,86 @@ async def _handle_goal_set(user_key: str, args: list[str]) -> str:
 
     lines = "\n".join(f"{label} {target} {unit}" for label, _, unit, target in updates)
     return "已設定每日目標：\n" + lines
+
+
+_MEAL_SET_FORMAT_ERROR = (
+    "指令格式錯誤，請使用「設定餐次 晚餐 17:30」，可設定的餐次：早餐、午餐、下午茶、晚餐、宵夜\n"
+    "也可以一次設定多項，例如「設定餐次 晚餐 17:30 宵夜 21:00」\n"
+    "輸入「設定餐次 預設」可全部還原成預設時段"
+)
+
+
+async def _handle_meal_set(user_key: str, args: list[str]) -> str:
+    """處理「設定餐次 晚餐 17:30」（可一次設定多項）與「設定餐次 預設」還原指令。
+
+    參數以「餐次 時間」成對解析（與 `修正`／`設定目標` 同一套語意），支援只給部分
+    餐次（其餘沿用目前設定），全部驗證通過後才寫入，避免半套狀態。只開放調整
+    「開始時間」，結束時間自動接下一段的開始時間，因此驗證規則只有一條：
+    五個起點嚴格遞增。
+
+    名稱／時間格式／重複指定三種驗證不需要目前的時間表，先於任何 I/O 完成；
+    順序衝突驗證則需要目前時間表當作未指定餐次的基準值，故必須排在
+    `get_user()`（含綁定檢查）之後才能進行。
+    """
+    if len(args) == 1 and args[0] == "預設":
+        user = await sheets.get_user(user_key)
+        if not user or not user.get("google_sheet_id"):
+            return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
+        await sheets.upsert_meal_schedule(user_key, "")
+        return "已還原成預設餐次時段：\n" + _format_schedule_table(_DEFAULT_MEAL_STARTS)
+
+    if not args or len(args) % 2 != 0:
+        return _MEAL_SET_FORMAT_ERROR
+
+    parsed_updates: dict[int, int] = {}
+    seen_names: set[str] = set()
+    for name_raw, time_raw in zip(args[::2], args[1::2]):
+        name = _normalize_meal_name(name_raw)
+        if name not in _VALID_MEAL_NAMES:
+            return f"不支援的餐次「{name_raw}」，可設定的餐次：{'、'.join(_MEAL_NAMES)}"
+        if name in seen_names:
+            return f"餐次「{name_raw}」重複出現，請每個餐次只指定一次"
+        seen_names.add(name)
+
+        minutes = _parse_time_token(time_raw)
+        if minutes is None:
+            return (
+                f"「{name_raw}」的時間格式無法辨識，請使用 24 小時制，例如「設定餐次 {name_raw} 17:30」\n"
+                "也可以輸入 1730 或 17（整點）"
+            )
+        parsed_updates[_MEAL_NAMES.index(name)] = minutes
+
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
+
+    new_starts = _parse_meal_schedule(user.get("meal_schedule", ""))
+    for index, minutes in parsed_updates.items():
+        new_starts[index] = minutes
+
+    for i in range(1, 5):
+        if new_starts[i] <= new_starts[i - 1]:
+            earlier_name, earlier_time = _MEAL_NAMES[i - 1], _format_minutes(new_starts[i - 1])
+            later_name, later_time = _MEAL_NAMES[i], _format_minutes(new_starts[i])
+            return (
+                f"時段順序不對：「{earlier_name} {earlier_time}」不能晚於「{later_name} {later_time}」\n"
+                "五個餐次的開始時間由早到晚：早餐→午餐→下午茶→晚餐→宵夜\n"
+                "可輸入「餐次」查看目前設定，或一次調整多項：「設定餐次 午餐 11:30 下午茶 14:00」"
+            )
+
+    await sheets.upsert_meal_schedule(user_key, _format_meal_schedule(new_starts))
+    return "已更新餐次時段：\n" + _format_schedule_table(new_starts)
+
+
+async def _handle_meal_query(user_key: str) -> str:
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
+
+    starts = _parse_meal_schedule(user.get("meal_schedule", ""))
+    return (
+        "目前餐次時段：\n"
+        + _format_schedule_table(starts)
+        + "\n早餐時段以前的紀錄會歸類在前一日的宵夜\n"
+        "輸入「設定餐次 晚餐 17:30」可調整"
+    )

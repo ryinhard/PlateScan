@@ -86,9 +86,10 @@ async def _get_lock(user_key: str) -> asyncio.Lock:
 
 
 # --- users 工作表：user_key | display_name | google_sheet_id | is_active | created_at
-#                   | daily_count | count_date ---
-# 後兩欄為 Gemini 每日用量計數（M13），由 try_consume_daily_quota() 獨立維護；
-# upsert_user() 只更新 B:E 欄，兩者互不干擾。
+#                   | daily_count | count_date | meal_schedule ---
+# F/G 欄為 Gemini 每日用量計數（M13），由 try_consume_daily_quota() 獨立維護；
+# H 欄為自訂餐次時段（M17），由 upsert_meal_schedule() 獨立維護；
+# upsert_user() 只更新 B:E 欄，三者互不干擾。
 
 
 def _row_to_user(row: list[str]) -> dict[str, Any]:
@@ -98,6 +99,7 @@ def _row_to_user(row: list[str]) -> dict[str, Any]:
         "google_sheet_id": row[2] if len(row) > 2 else "",
         "is_active": (row[3] if len(row) > 3 else "").strip().upper() == "TRUE",
         "created_at": row[4] if len(row) > 4 else "",
+        "meal_schedule": row[7] if len(row) > 7 else "",
     }
 
 
@@ -188,6 +190,27 @@ async def try_consume_daily_quota(user_key: str, limit: int, today: str) -> tupl
     lock = await _get_lock(user_key)
     async with lock:
         return await asyncio.to_thread(_write)
+
+
+async def upsert_meal_schedule(user_key: str, schedule_str: str) -> None:
+    """更新 users 工作表中對應 user_key 的自訂餐次時段（H 欄 meal_schedule）。
+
+    對應「設定餐次」指令。比照 try_consume_daily_quota() 只更新單欄的做法，
+    不觸及 upsert_user() 維護的 B:E 範圍。schedule_str 為空字串代表還原成預設時段
+    （對應「設定餐次 預設」）。找不到該使用者（尚未綁定）時略過寫入，
+    交由呼叫端既有的綁定檢查處理。
+    """
+
+    def _write() -> None:
+        worksheet = _get_worksheet(USERS_WORKSHEET)
+        for row_number, row in enumerate(worksheet.get_all_values()[1:], start=2):
+            if row and row[0] == user_key:
+                worksheet.update(range_name=f"H{row_number}", values=[[schedule_str]])
+                return
+
+    lock = await _get_lock(user_key)
+    async with lock:
+        await asyncio.to_thread(_write)
 
 
 # --- buffer 工作表：user_key | item_type | content | created_at ---
