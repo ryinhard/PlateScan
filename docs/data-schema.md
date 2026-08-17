@@ -18,7 +18,30 @@ Bot 與 PWA 統一使用以下 Google Sheet 工作表結構，確保前後端讀
 
 ### `buffer` 工作表
 
-暫存使用者傳送照片（`message_id`/`file_id`）與文字描述，觸發 `ok` 指令後清空。詳見 [architecture.md](architecture.md) 第 4 節。
+暫存使用者傳送照片（`message_id`/`file_id`）與文字描述，觸發 `ok` 指令後清空。機制設計見 [architecture.md](architecture.md) 第 4 節。
+
+| A: user_key | B: item_type | C: content | D: created_at |
+|---|---|---|---|
+| `line:U1234abcd...` | `photo` | `465726095868788771` | 2026-08-17T09:12:34.567890+00:00 |
+| `line:U1234abcd...` | `text` | 雞腿便當加了半碗飯 | 2026-08-17T09:12:51.221004+00:00 |
+
+> `item_type` 固定為 `photo` 或 `text` 兩種值。`content` 依 `item_type` 而異：`photo` 存平台提供的圖片代碼（LINE 為 `message_id`、Telegram 為 `file_id`，**不存 Base64**），`text` 存使用者輸入的餐點描述原文。
+> `created_at` 為 UTC ISO 8601 字串（`datetime.now(timezone.utc).isoformat()`），僅供人工排查用；`get_buffer_items()` 是依**列的先後順序**回傳，不依此欄排序。
+> 同一 `user_key` 的讀寫以 `asyncio.Lock()` 序列化（見 [architecture.md](architecture.md) 第 4 節），避免使用者連發照片時的競態條件。
+>
+> ⚠️ **手動步驟**：與 `users` 相同，`buffer` 工作表**沒有自動建表機制**，須在建立管理 Sheet 時手動建立工作表並填入第 1 列表頭（見下方「管理 Sheet 的手動建表表頭」）。
+
+### 管理 Sheet 的手動建表表頭
+
+管理 Sheet（`ADMIN_SHEET_ID`）的 `users`／`buffer` 兩張工作表**不會由程式自動建立**（自動建表機制只存在於使用者個人 Sheet 的 `daily_log`／`goals`，見 `app/core/sheets.py` 的 `ensure_user_worksheets()`）。首次部署時必須手動建好，否則 Bot 一啟用即失敗。完整操作步驟見 [deployment.md](deployment.md) 的「建立管理用 Google Sheet」一節，兩張工作表的第 1 列請逐格填入下列表頭文字：
+
+| 工作表名稱 | 第 1 列表頭（A 欄起，逐格一個） |
+|---|---|
+| `users` | `user_key`、`display_name`、`google_sheet_id`、`is_active`、`created_at`、`daily_count`、`count_date`、`meal_schedule` |
+| `buffer` | `user_key`、`item_type`、`content`、`created_at` |
+
+> 工作表名稱須與 `app/core/sheets.py` 的 `USERS_WORKSHEET`／`BUFFER_WORKSHEET` 常數完全一致（區分大小寫）。
+> 表頭文字本身不被程式讀取（讀寫一律以欄位位置為準，且讀取時以 `get_all_values()[1:]` 跳過第 1 列），但**第 1 列必須存在**，否則首筆資料會被當成表頭略過。日後新增欄位時亦須手動補上表頭文字，否則資料會寫進沒有表頭的欄位。
 
 ## 使用者個人 Google Sheet（`google_sheet_id`，由使用者自行建立並分享給 Service Account）
 

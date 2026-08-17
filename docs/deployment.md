@@ -9,6 +9,28 @@
 - 安裝 [gcloud CLI](https://cloud.google.com/sdk/docs/install)（Windows 有 .exe 安裝檔）
 - 已有 `credentials/service-account.json`（建立管理 Sheet 時使用的同一把 service account 金鑰）
 
+## 建立管理用 Google Sheet
+
+後端以一張「管理用 Google Sheet」（環境變數 `ADMIN_SHEET_ID`）保存所有使用者的綁定設定與照片暫存。
+**這張 Sheet 與其中的兩張工作表都必須手動建立**——程式的自動建表機制（`ensure_user_worksheets()`）
+只作用於使用者個人 Sheet 的 `daily_log`／`goals`，不會碰管理 Sheet。少了這一步，Bot 一收到訊息就會失敗。
+
+1. 建立一個新的空白 Google 試算表。
+2. 建立兩張工作表，名稱分別為 `users` 與 `buffer`（須與 `app/core/sheets.py` 的
+   `USERS_WORKSHEET`／`BUFFER_WORKSHEET` 常數完全一致，區分大小寫；記得把預設的「工作表1」改名或刪除）。
+3. 在兩張工作表的**第 1 列**逐格填入表頭文字，欄位定義與完整表頭清單見
+   [data-schema.md](data-schema.md) 的「管理 Sheet 的手動建表表頭」一節：
+   - `users`：`user_key`、`display_name`、`google_sheet_id`、`is_active`、`created_at`、`daily_count`、`count_date`、`meal_schedule`
+   - `buffer`：`user_key`、`item_type`、`content`、`created_at`
+4. 右上角「共用」，把 service account 的 email（`credentials/service-account.json` 裡的
+   `client_email` 欄位）加為**編輯者**。
+5. 從網址 `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit` 取出 `<SHEET_ID>`，
+   即為稍後部署時要帶入的 `ADMIN_SHEET_ID`。
+
+> 表頭文字本身不會被程式讀取（讀寫一律以欄位位置為準），但**第 1 列必須存在**——
+> 所有讀取都以 `get_all_values()[1:]` 跳過第 1 列，缺表頭會導致第一筆資料被當成表頭吃掉。
+> 日後若新增欄位，除了改程式與 [data-schema.md](data-schema.md)，也要記得手動補上表頭文字。
+
 ## 一次性設定
 
 ```bash
