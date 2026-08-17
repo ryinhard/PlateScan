@@ -20,20 +20,21 @@ logger = logging.getLogger("app.core.dispatcher")
 
 _HELP_TEXT = (
     "支援的指令（中文或 / 開頭英文指令皆可，Telegram 可用選單快速輸入）：\n"
-    "新手教學（/start）→ 查看完整設定教學（首次使用推薦）\n"
-    "傳送照片/文字 → 追加至當前餐次緩衝區\n"
-    "ok（/ok）→ 結束當前餐次，觸發辨識並寫入紀錄\n"
-    "今日（/today）→ 查詢今日累計營養素\n"
-    "圖表 / 分析（/chart）→ 取得個人 PWA 儀表板連結\n"
-    "連結 / 原始表單（/link）→ 取得個人 Google Sheet 編輯連結\n"
-    "修正 熱量 700（/fix）→ 修正最近一筆紀錄的數值或餐次（可一次修正多項）\n"
-    "修改日期 2026/08/17（/setdate）→ 修正最近一筆紀錄的日期\n"
-    "刪除（/delete）→ 刪除最近一筆紀錄\n"
-    "綁定 {Sheet ID}（/set）→ 綁定/更換個人 Google Sheet\n"
-    "設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
-    "目標（/goal）→ 查詢每日營養目標\n"
-    "取消（/cancel）→ 清空目前緩衝區\n"
-    "說明（/help）→ 顯示本列表"
+    "●新手教學（/start）→ 完整設定教學（首次使用推薦）\n"
+    "●傳送照片/文字 → 追加至當前餐次緩衝區\n"
+    "●ok（/ok）→ 當前餐次輸入完成，啟動辨識\n"
+    "●取消（/cancel）→ 清空目前緩衝區\n"
+    "●今日（/today）→ 查詢今日累計營養\n"
+    "●圖表 / 分析（/chart）→ 個人儀表板連結\n"
+    "●連結 / 原始表單（/link）→ 個人Google Sheet連結\n"
+    "●綁定 {Sheet ID}（/set）→ 綁定/更換個人Google Sheet\n"
+    "●修正 熱量 700（/fix）→ 修正最近一筆的紀錄，可修正數值、餐次、日期\n"
+    "●修正範例（/fixhelp）→ 提供修正指令範例\n"
+    "●修改日期 2026/08/17（/setdate）→ 修正最近一筆紀錄的日期\n"
+    "●刪除（/delete）→ 刪除最近一筆紀錄\n"
+    "●設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
+    "●目標（/goal）→ 查詢每日營養目標\n"
+    "●說明（/help）→ 顯示本列表"
 )
 
 _GOAL_REMINDER = (
@@ -57,6 +58,7 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "cancel": frozenset({"取消", "cancel"}),
     "delete": frozenset({"刪除", "delete"}),
     "help": frozenset({"說明", "指令", "help"}),
+    "fixhelp": frozenset({"修正範例", "fixhelp"}),
     "onboarding": frozenset({"新手教學", "教學", "start"}),
 }
 
@@ -155,6 +157,15 @@ _CORRECT_FIELD_ALIASES = {
 }
 _VALID_MEAL_NAMES = {"早餐", "午餐", "晚餐", "宵夜"}
 _CORRECT_FIELD_LIST = "、".join(_CORRECT_FIELD_ALIASES)
+
+_FIXHELP_TEXT = (
+    "修正指令範例：\n"
+    "修正 熱量 700 → 修正熱量\n"
+    "修正 餐次 午餐 → 修正餐次（早餐/午餐/晚餐/宵夜）\n"
+    "修正 日期 2026/08/17 → 修正日期（等同「修改日期 2026/08/17」）\n"
+    "修正 熱量 700 蛋白質 30 → 一次修正多項\n"
+    f"可用欄位：{_CORRECT_FIELD_LIST}"
+)
 
 # 「修改日期 昨天」等相對日期說法，值為相對今日（Asia/Taipei）的天數差。
 _RELATIVE_DATE_OFFSETS = {"今天": 0, "昨天": -1, "前天": -2}
@@ -285,6 +296,9 @@ async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
 
     if command == "help":
         return _HELP_TEXT
+
+    if command == "fixhelp":
+        return _FIXHELP_TEXT
 
     if command == "onboarding":
         return get_onboarding_text()

@@ -485,6 +485,20 @@ async def test_handle_text_help_command_returns_static_command_list(
     assert reply is not None and "ok" in reply and "綁定" in reply
 
 
+# --- 「修正範例」指令 ---
+
+
+@pytest.mark.parametrize("command", ["修正範例", "fixhelp"])
+async def test_handle_text_fixhelp_command_returns_correct_command_examples(
+    spy_append: list[tuple[str, str, str]],
+    command: str,
+):
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []  # 「修正範例」不應被當成一般文字暫存
+    assert reply is not None and "修正 熱量 700" in reply and "修正 日期" in reply
+
+
 # --- 「新手教學」指令（LINE follow / Telegram /start 皆會觸發） ---
 
 

@@ -22,6 +22,7 @@ _BOT_COMMANDS = [
     {"command": "chart", "description": "取得個人 PWA 儀表板連結"},
     {"command": "link", "description": "取得個人 Google Sheet 編輯連結"},
     {"command": "fix", "description": "修正最近一筆紀錄，例：/fix 熱量 700"},
+    {"command": "fixhelp", "description": "顯示 /fix 指令的使用範例"},
     {"command": "setdate", "description": "修改最近一筆紀錄的日期，例：/setdate 2026/08/17"},
     {"command": "delete", "description": "刪除最近一筆紀錄"},
     {"command": "set", "description": "綁定/更換個人 Google Sheet，例：/set {Sheet ID}"},

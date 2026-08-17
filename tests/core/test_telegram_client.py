@@ -87,7 +87,7 @@ async def test_set_my_commands_posts_command_list(monkeypatch: pytest.MonkeyPatc
     assert url.endswith("/setMyCommands")
     command_names = [c["command"] for c in body["commands"]]
     assert command_names == [
-        "start", "ok", "today", "chart", "link", "fix", "setdate", "delete",
+        "start", "ok", "today", "chart", "link", "fix", "fixhelp", "setdate", "delete",
         "set", "setgoal", "goal", "cancel", "help",
     ]
 
