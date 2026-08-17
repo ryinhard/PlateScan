@@ -71,7 +71,11 @@ async def _dispatch_update(update: dict, background_tasks: BackgroundTasks) -> N
 
 
 async def _process_text_reply(user_key: str, text: str, chat_id: int) -> None:
-    """背景執行文字指令處理，完成後以 Telegram sendMessage 送出回覆文字。"""
-    reply_text = await dispatcher.handle_text(user_key, text)
+    """背景執行文字指令處理，完成後以 Telegram sendMessage 送出回覆文字；
+    若本次指令需要附上引導圖片（新手教學／綁定的空參數或佔位符），額外呼叫 sendPhoto。
+    """
+    reply_text, image_url = await dispatcher.handle_text_with_media(user_key, text)
     if reply_text:
         await telegram_client.send_message(chat_id, reply_text)
+        if image_url:
+            await telegram_client.send_photo(chat_id, image_url)

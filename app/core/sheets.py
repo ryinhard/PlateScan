@@ -119,7 +119,7 @@ async def upsert_user(
 ) -> None:
     """新增或更新 users 工作表中對應 user_key 的一筆設定。
 
-    對應「設定 {Sheet ID}」指令：使用者第一次綁定時新增列，
+    對應「綁定 {Sheet ID}」指令：使用者第一次綁定時新增列，
     之後更換 Google Sheet 時更新既有列。
     """
 
@@ -404,7 +404,7 @@ _GOALS_HEADER = ["nutrient", "target", "unit"]
 async def ensure_user_worksheets(google_sheet_id: str) -> list[str]:
     """確保使用者個人 Sheet 具備 daily_log／goals 工作表，缺少時自動建立並寫入表頭。
 
-    對應「設定 {Sheet ID}」指令：使用者只需建立一個空白 Sheet 分享編輯權限即可，
+    對應「綁定 {Sheet ID}」指令：使用者只需建立一個空白 Sheet 分享編輯權限即可，
     不必自行複製範本或手動建立分頁。回傳這次實際新增的工作表名稱（供組裝提示訊息），
     兩個工作表皆已存在時回傳空列表。開啟 Sheet 失敗（ID 錯誤或尚未分享編輯權限）時，
     底層 gspread 例外原樣往外拋出，由呼叫端（dispatcher._handle_set）轉換成使用者看得懂的錯誤訊息。

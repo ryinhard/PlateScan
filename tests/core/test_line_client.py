@@ -76,3 +76,49 @@ async def test_push_message_swallows_exception(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(line_client, "_post", _fake_post)
 
     await line_client.push_message("U1", "已記錄")  # 不應拋出例外
+
+
+async def test_reply_message_appends_image_message_when_image_url_given(
+    spy_post: list[tuple[str, dict]],
+):
+    await line_client.reply_message("token-1", "已記錄", "https://example.com/pic.jpg")
+
+    assert spy_post == [
+        (
+            line_client._REPLY_URL,
+            {
+                "replyToken": "token-1",
+                "messages": [
+                    {"type": "text", "text": "已記錄"},
+                    {
+                        "type": "image",
+                        "originalContentUrl": "https://example.com/pic.jpg",
+                        "previewImageUrl": "https://example.com/pic.jpg",
+                    },
+                ],
+            },
+        )
+    ]
+
+
+async def test_push_message_appends_image_message_when_image_url_given(
+    spy_post: list[tuple[str, dict]],
+):
+    await line_client.push_message("U1", "已記錄", "https://example.com/pic.jpg")
+
+    assert spy_post == [
+        (
+            line_client._PUSH_URL,
+            {
+                "to": "U1",
+                "messages": [
+                    {"type": "text", "text": "已記錄"},
+                    {
+                        "type": "image",
+                        "originalContentUrl": "https://example.com/pic.jpg",
+                        "previewImageUrl": "https://example.com/pic.jpg",
+                    },
+                ],
+            },
+        )
+    ]

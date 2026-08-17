@@ -16,7 +16,7 @@
    - **個人 Sheet**：分享給 Service Account Email（**編輯者**，供 Bot 寫入）＋設為「知道連結的人皆可**檢視**」（供前端 PWA 以 `gviz/tq` 讀取）。
 4. 複製 Sheet 網址中的 ID（`https://docs.google.com/spreadsheets/d/{這一段}/edit`）：
    - 管理後台 Sheet 的 ID 填入後端 `.env` 的 `ADMIN_SHEET_ID`。
-   - 個人 Sheet 的 ID 由使用者透過 Bot 指令「設定 {Sheet ID}」自行綁定，寫入 `users` 工作表的 `google_sheet_id` 欄位。
+   - 個人 Sheet 的 ID 由使用者透過 Bot 指令「綁定 {Sheet ID}」自行綁定，寫入 `users` 工作表的 `google_sheet_id` 欄位。
 
 ## 欄位格式備註
 

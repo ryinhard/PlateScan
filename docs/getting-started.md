@@ -4,7 +4,7 @@
 
 ## 1. 建立個人 Google 試算表
 
-去 [Google Sheets](https://sheets.google.com) 建立一個新的空白試算表即可，**不需要自己建立任何分頁或欄位**——完成下面「設定 {Sheet ID}」綁定時，Bot 會自動幫你建立需要的 `daily_log`（飲食紀錄）與 `goals`（每日目標）工作表。
+去 [Google Sheets](https://sheets.google.com) 建立一個新的空白試算表即可，**不需要自己建立任何分頁或欄位**——完成下面「綁定 {Sheet ID}」時，Bot 會自動幫你建立需要的 `daily_log`（飲食紀錄）與 `goals`（每日目標）工作表。
 
 ## 2. 分享權限（同一個「共用」視窗完成兩件事）
 
@@ -22,14 +22,16 @@
 回到跟 Bot 的對話，輸入：
 
 ```
-設定 {Sheet ID}
+綁定 {Sheet ID}
 ```
 
 `{Sheet ID}` 可以直接貼整段 Google Sheets 網址（Bot 會自動擷取其中的 ID），例如：
 
 ```
-設定 https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOp/edit
+綁定 https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOp/edit
 ```
+
+（若只打「綁定」不帶參數，或照抄上面貼了整串含大括號的「綁定 {Sheet ID}」，Bot 會回覆這整份設定教學加上一張操作截圖，不會顯示格式錯誤。）
 
 綁定成功後 Bot 會回覆確認訊息，並告知是否有自動建立缺少的工作表。若失敗（通常是還沒完成步驟 2 的編輯者授權，或 ID／網址複製錯誤），Bot 會提示需要確認的項目，修正後重新輸入一次即可。
 
@@ -45,7 +47,7 @@
 ## 5. 常見問題
 
 - **「圖表」給的連結打開後沒有資料？** 確認步驟 2 的「一般存取權」是否已設為「知道連結的任何人」。
-- **輸入「設定 {Sheet ID}」後 Bot 說「無法存取這個 Google Sheet」？** 通常是還沒把 Service Account 加為編輯者，或 Sheet ID／網址複製錯誤，請重新檢查步驟 2 與 3。
-- **想換一份新的 Sheet？** 直接重新輸入「設定 {新的 Sheet ID}」即可覆蓋原本綁定，不需要先「取消」。
+- **輸入「綁定 {Sheet ID}」後 Bot 說「無法存取這個 Google Sheet」？** 通常是還沒把 Service Account 加為編輯者，或 Sheet ID／網址複製錯誤，請重新檢查步驟 2 與 3。
+- **想換一份新的 Sheet？** 直接重新輸入「綁定 {新的 Sheet ID}」即可覆蓋原本綁定，不需要先「取消」。
 
 指令完整規格見 [commands.md](commands.md)，系統架構見 [architecture.md](architecture.md)。

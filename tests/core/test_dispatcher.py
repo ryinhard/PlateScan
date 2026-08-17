@@ -480,7 +480,7 @@ async def test_handle_text_help_command_returns_static_command_list(
     reply = await dispatcher.handle_text("line:U1", "說明")
 
     assert spy_append == []  # 「說明」不應被當成一般文字暫存
-    assert reply is not None and "ok" in reply and "設定" in reply
+    assert reply is not None and "ok" in reply and "綁定" in reply
 
 
 # --- 「新手教學」指令（LINE follow / Telegram /start 皆會觸發） ---
@@ -497,12 +497,103 @@ async def test_handle_text_onboarding_command_returns_setup_guide(
     assert spy_append == []  # 不應被當成一般文字暫存
     assert reply is not None
     assert fake_service_account_email in reply
-    assert "設定 {Sheet ID}" in reply
+    assert "綁定 {Sheet ID}" in reply
     assert "知道連結的任何人" in reply
 
 
 def test_get_onboarding_text_embeds_service_account_email(fake_service_account_email: str):
     assert fake_service_account_email in dispatcher.get_onboarding_text()
+
+
+# --- 引導圖片（M15：新手教學／綁定的空參數或佔位符會額外附上一張圖片） ---
+
+
+def test_get_onboarding_image_url_builds_from_web_base_url(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    assert (
+        dispatcher.get_onboarding_image_url()
+        == "https://example.github.io/PlateScan/images/copy-sheet-link.jpg"
+    )
+
+
+def test_get_onboarding_image_url_none_when_web_base_url_unset(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "web_base_url", None)
+
+    assert dispatcher.get_onboarding_image_url() is None
+
+
+@pytest.mark.parametrize("command", ["新手教學", "教學", "start", "綁定", "設定", "綁定 {Sheet ID}"])
+async def test_handle_text_with_media_attaches_image_for_onboarding_and_unbound_set(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_service_account_email: str,
+    command: str,
+):
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    reply, image_url = await dispatcher.handle_text_with_media("line:U1", command)
+
+    assert reply is not None
+    assert image_url == "https://example.github.io/PlateScan/images/copy-sheet-link.jpg"
+
+
+async def test_handle_text_with_media_no_image_for_normal_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    async def _fake_get_daily_log_rows(google_sheet_id: str, date: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_daily_log_rows", _fake_get_daily_log_rows)
+
+    reply, image_url = await dispatcher.handle_text_with_media("line:U1", "今日")
+
+    assert reply is not None
+    assert image_url is None
+
+
+async def test_handle_text_with_media_no_image_when_bound_set_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """已綁定過的「綁定 {合法ID}」（有效參數、非佔位符）走正常綁定流程，不附圖。"""
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    async def _fake_get_user(user_key: str):
+        return None
+
+    async def _fake_upsert_user(*args, **kwargs) -> None:
+        return None
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply, image_url = await dispatcher.handle_text_with_media("line:U1", "綁定 sheet-new")
+
+    assert reply is not None and "sheet-new" in reply
+    assert image_url is None
+
+
+async def test_handle_text_with_media_no_image_when_reply_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """一般餐點描述文字（handle_text 回傳 None）也不應附圖。"""
+    monkeypatch.setattr(settings, "web_base_url", "https://example.github.io/PlateScan")
+
+    async def _fake_append(user_key: str, item_type: str, content: str) -> None:
+        return None
+
+    monkeypatch.setattr(sheets, "append_buffer_item", _fake_append)
+
+    reply, image_url = await dispatcher.handle_text_with_media("line:U1", "雞腿便當")
+
+    assert reply is None
+    assert image_url is None
 
 
 # --- 「取消」指令 ---
@@ -526,7 +617,7 @@ async def test_handle_text_cancel_command_clears_buffer(
     assert reply is not None and "清空" in reply
 
 
-# --- 「設定」指令 ---
+# --- 「綁定」指令（M15：由「設定」更名，「設定」靜默保留為別名） ---
 
 
 async def test_handle_text_set_command_binds_new_sheet_id(
@@ -548,15 +639,43 @@ async def test_handle_text_set_command_binds_new_sheet_id(
     monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
     monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
 
-    reply = await dispatcher.handle_text("line:U1", "設定 sheet-new")
+    reply = await dispatcher.handle_text("line:U1", "綁定 sheet-new")
 
     assert spy_append == []
     assert upsert_calls == [("line:U1", "sheet-new", "")]
     assert reply is not None
     assert "sheet-new" in reply
     assert "已自動建立" not in reply  # 分頁已存在時不出現這行
-    assert "設定目標" in reply  # 目標設定提醒
+    assert "設定目標" in reply  # 目標設定提醒（指令名稱不變，不受本次更名影響）
     assert "知道連結的人可檢視" in reply  # 圖表權限提醒
+
+
+async def test_handle_text_set_legacy_alias_still_binds_sheet_id(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+):
+    """舊指令詞「設定」靜默保留為別名，行為須與「綁定」完全一致。"""
+
+    async def _fake_get_user(user_key: str):
+        return None
+
+    upsert_calls: list[tuple[str, str, str]] = []
+
+    async def _fake_upsert_user(user_key: str, google_sheet_id: str, display_name: str = "") -> None:
+        upsert_calls.append((user_key, google_sheet_id, display_name))
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        return []
+
+    monkeypatch.setattr(sheets, "get_user", _fake_get_user)
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply = await dispatcher.handle_text("line:U1", "設定 sheet-new")
+
+    assert spy_append == []
+    assert upsert_calls == [("line:U1", "sheet-new", "")]
+    assert reply is not None and "sheet-new" in reply
 
 
 async def test_handle_text_set_command_reports_auto_created_worksheets(
@@ -604,10 +723,11 @@ async def test_handle_text_set_command_extracts_id_from_full_url_and_preserves_d
     assert reply is not None and "sheet-xyz" in reply
 
 
-async def test_handle_text_set_command_rejects_wrong_argument_count(
+async def test_handle_text_set_command_rejects_too_many_arguments(
     monkeypatch: pytest.MonkeyPatch,
     spy_append: list[tuple[str, str, str]],
 ):
+    """兩個以上參數（非空、非佔位符）仍視為格式錯誤，維持原本行為。"""
     upsert_calls: list[tuple] = []
     ensure_calls: list[str] = []
 
@@ -621,12 +741,67 @@ async def test_handle_text_set_command_rejects_wrong_argument_count(
     monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
     monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
 
-    reply = await dispatcher.handle_text("line:U1", "設定")
+    reply = await dispatcher.handle_text("line:U1", "綁定 sheet-new 多餘參數")
 
     assert spy_append == []
     assert upsert_calls == []
     assert ensure_calls == []  # 格式驗證應先於任何 I/O
     assert reply is not None and "格式錯誤" in reply
+
+
+@pytest.mark.parametrize("command", ["綁定", "設定", " 綁定 "])
+async def test_handle_text_set_command_without_args_returns_onboarding_guide(
+    monkeypatch: pytest.MonkeyPatch,
+    spy_append: list[tuple[str, str, str]],
+    fake_service_account_email: str,
+    command: str,
+):
+    """無參數時不再回格式錯誤，改回完整的綁定步驟引導（含真實 Service Account Email）。"""
+    upsert_calls: list[tuple] = []
+    ensure_calls: list[str] = []
+
+    async def _fake_upsert_user(*args, **kwargs) -> None:
+        upsert_calls.append((args, kwargs))
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        ensure_calls.append(google_sheet_id)
+        return []
+
+    monkeypatch.setattr(sheets, "upsert_user", _fake_upsert_user)
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert spy_append == []
+    assert upsert_calls == []
+    assert ensure_calls == []  # 引導訊息不應觸發任何 Sheet I/O
+    assert reply is not None
+    assert reply == dispatcher.get_onboarding_text()
+    assert fake_service_account_email in reply
+    assert "格式錯誤" not in reply
+
+
+@pytest.mark.parametrize("command", ["綁定 {Sheet ID}", "綁定  {Sheet  ID}  "])
+async def test_handle_text_set_command_with_placeholder_arg_returns_onboarding_guide(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_service_account_email: str,
+    command: str,
+):
+    """Rich Menu 按鈕送出的樣板字面「綁定 {Sheet ID}」（大括號含空白會被切成兩個 token）
+    須被視同無參數，導向引導訊息，而非拿去當 Sheet ID 嘗試存取。
+    """
+    ensure_calls: list[str] = []
+
+    async def _fake_ensure_worksheets(google_sheet_id: str):
+        ensure_calls.append(google_sheet_id)
+        return []
+
+    monkeypatch.setattr(sheets, "ensure_user_worksheets", _fake_ensure_worksheets)
+
+    reply = await dispatcher.handle_text("line:U1", command)
+
+    assert ensure_calls == []  # 不應把佔位符文字拿去嘗試驗證存取權
+    assert reply == dispatcher.get_onboarding_text()
 
 
 async def test_handle_text_set_command_reports_access_failure_before_binding(

@@ -16,7 +16,7 @@ Bot 端（LINE / Telegram）支援的文字指令。系統架構與 Reply/Push �
 | `取消` | `/cancel` | 清除目前緩衝區 | ✅ 已實作 |
 | `目標` | `/goal` | 回傳每日營養目標文字彙整 | ✅ 已實作 |
 | `設定目標 熱量 2000` | `/setgoal` | 設定/更新每日營養目標數值 | ✅ 已實作 |
-| `設定 {Sheet ID}` | `/set` | 綁定/更換 Google Sheet | ✅ 已實作 |
+| `綁定 {Sheet ID}` | `/set` | 綁定/更換 Google Sheet（舊名「設定」仍可用） | ✅ 已實作 |
 | `說明` | `/help` | 顯示指令列表 | ✅ 已實作 |
 
 ## 實作細節備註
@@ -39,7 +39,7 @@ Bot 端（LINE / Telegram）支援的文字指令。系統架構與 Reply/Push �
   刻意**不阻擋未來日期**（使用者可能預先調整），但 `2026/02/30` 這類不存在的日期會被擋下。
 - `刪除`：刪除 `daily_log` 最後一列並在回覆中列出完整的被刪內容（日期／餐次／品項／四項營養素），供使用者立即確認是否刪錯。**不做二次確認**——紀錄為單筆且隨時可重新拍照補回，維護 pending 確認狀態的複雜度不划算。
 - `圖表`/`分析`：組出 `{WEB_BASE_URL}/?sheet_id={google_sheet_id}`，成功時額外附上一行提醒：確認 Sheet 的「一般存取權」已設為「知道連結的人可檢視」；未綁定 Sheet 或 `WEB_BASE_URL` 未設定時回傳對應錯誤訊息。
-- `設定 {Sheet ID}`：接受直接貼 Google Sheets 完整網址（自動擷取 `/d/{ID}/` 中的 ID）或純 ID。綁定流程：① 先呼叫 `sheets.ensure_user_worksheets()` 驗證存取權並自動建立缺少的 `daily_log`/`goals` 工作表（含表頭）—— 驗證放在寫入 `users` 工作表**之前**，避免綁定一個實際存取不了的 Sheet ID；② 驗證失敗（通常是尚未分享編輯權限或 ID 錯誤）時回傳包含 Service Account Email 的具體修正指引；③ 成功時寫入/更新管理 Sheet `users` 工作表的 `google_sheet_id`（更新既有使用者會保留原本的 `display_name`），回覆訊息依「是否有自動建立工作表」動態組裝，並附上設定目標與圖表權限的提醒。
+- `綁定 {Sheet ID}`：顯示文字統一只寫「綁定」，舊指令詞「設定」靜默保留為別名（不在任何回覆中提及，避免新使用者同時看到兩種寫法而混淆）。接受直接貼 Google Sheets 完整網址（自動擷取 `/d/{ID}/` 中的 ID）或純 ID。無參數（只打「綁定」）或參數為未替換的樣板文字（`{...}` 大括號包起來，例如 Rich Menu 按鈕送出的字面「綁定 {Sheet ID}」，或照抄教學把 `{Sheet ID}` 一起貼上）時，不回格式錯誤，改回完整的綁定步驟引導訊息（`get_onboarding_text()`，含即時讀出的 Service Account Email），並額外附上一張「如何取得 Google Sheet 連結」的圖片訊息（見下方「引導圖片」）。綁定流程：① 先呼叫 `sheets.ensure_user_worksheets()` 驗證存取權並自動建立缺少的 `daily_log`/`goals` 工作表（含表頭）—— 驗證放在寫入 `users` 工作表**之前**，避免綁定一個實際存取不了的 Sheet ID；② 驗證失敗（通常是尚未分享編輯權限或 ID 錯誤）時回傳包含 Service Account Email 的具體修正指引；③ 成功時寫入/更新管理 Sheet `users` 工作表的 `google_sheet_id`（更新既有使用者會保留原本的 `display_name`），回覆訊息依「是否有自動建立工作表」動態組裝，並附上設定目標與圖表權限的提醒。
 - `設定目標 熱量 2000`：支援欄位別名 `熱量`(kcal)/`碳水`(g)/`蛋白質`(g)/`脂肪`(g)，寫入/更新使用者個人 Sheet 的 `goals` 工作表對應列（`nutrient` 已存在時原地更新，否則新增一列）。與 `修正` 相同，參數以「欄位 值」成對解析，可一次設定多項（`設定目標 熱量 2000 蛋白質 120 碳水 220 脂肪 100`），**全部驗證通過後才開始寫入**，同一欄位重複指定會被擋下。PWA 目標彈窗的「📋 複製指令」按鈕即複製此單行多項格式——刻意不用換行分隔多項，因為指令解析以第一個詞判定指令、其餘全視為參數，多行訊息會被當成同一則指令的一長串參數而解析失敗。
 - `取消`：清空 `buffer` 工作表中該使用者的所有暫存項目（照片/文字），不影響已寫入的 `daily_log`。
 - `目標`：讀取使用者個人 Sheet 的 `goals` 工作表，依列彙整成「營養素 數值單位」文字回覆；尚未綁定 Sheet 或 `goals` 工作表無資料時提示對應訊息。
@@ -49,7 +49,7 @@ Bot 端（LINE / Telegram）支援的文字指令。系統架構與 Reply/Push �
 
 - 每個指令除了原本的中文觸發詞，另外提供一個英文/slash 別名（見上表），大小寫不敏感，且會自動去除 Telegram 群組常見的 `/指令@BotName` 後綴。
 - 不需要參數的指令（`新手教學`/`ok`/`今日`/`圖表`/`分析`/`連結`/`原始表單`/`目標`/`取消`/`刪除`/`說明`）要求整則訊息去除頭尾空白後**完全等於**觸發詞，才會被視為指令；否則一律視為一般餐點描述文字追加至緩衝區（例如「今日吃了雞腿便當」不會被誤判成「今日」查詢指令）。
-- 需要參數的指令（`修正`/`修改日期`/`設定`/`設定目標`）僅比對訊息的**第一個詞**，其餘視為參數。
+- 需要參數的指令（`修正`/`修改日期`/`綁定`/`設定目標`）僅比對訊息的**第一個詞**，其餘視為參數。
 - 全形空白（`　`）與訊息前後空白會先正規化為一般半形空白再比對，提升手機輸入法容錯。
 
 ## Gemini 用量控管
@@ -70,4 +70,8 @@ Bot 端（LINE / Telegram）支援的文字指令。系統架構與 Reply/Push �
 ## Bot 選單設定
 
 - **Telegram**：`app/core/telegram_client.py` 的 `set_my_commands()` 於 FastAPI 啟動時（`app/main.py` 的 `on_startup`）呼叫 `setMyCommands`，向 Telegram 註冊上表的英文 slash 別名（含 `/start`），使用者可在輸入框打 `/` 叫出指令選單與說明。註冊失敗僅記錄警告，不影響服務啟動。
-- **LINE**：`scripts/setup_line_richmenu.py` 為一次性設定腳本（非後端執行期程式碼），以 Pillow 產生 6 格單排陽春文字版選單圖（2500x843，LINE compact 尺寸）後，透過 LINE Rich Menu API 建立並設為所有使用者的預設選單。只放 6 個高頻指令（`ok`／`今日`／`圖表`／`原始表單`／`設定`／`說明`），`修正`/`設定目標`/`目標`/`取消` 等低頻或進階指令改用打字或 Telegram slash 指令即可，不佔選單格位。`python scripts/setup_line_richmenu.py --dry-run` 可只產生預覽圖（`scripts/richmenu_preview.png`，不進版控）不呼叫任何 LINE API；不加參數執行則會**直接覆蓋正式環境的預設選單**，執行前需確認 `.env` 的 `LINE_CHANNEL_ACCESS_TOKEN` 為正確頻道。之後如需美術設計圖，可直接替換 `generate_image()` 產生的圖片來源，只要維持相同的按鈕座標即可沿用既有的 `_build_areas()` 綁定邏輯。
+- **LINE**：`scripts/setup_line_richmenu.py` 為一次性設定腳本（非後端執行期程式碼），以 Pillow 產生 **2 橫行 × 3 格**的陽春文字版選單圖（2500x1686，LINE full 尺寸）後，透過 LINE Rich Menu API 建立並設為所有使用者的預設選單。只放 6 個高頻指令（`ok`／`今日`／`圖表`／`原始表單`／`綁定`／`說明`），`修正`/`設定目標`/`目標`/`取消` 等低頻或進階指令改用打字或 Telegram slash 指令即可，不佔選單格位。`selected: false`（預設收合）——full 版型展開後約佔手機畫面一半，一進聊天室就展開會遮住對話紀錄，改為只顯示輸入框上方的「指令選單」拉桿，使用者點一下才展開。`綁定` 格的顯示標籤是短字「綁定」，但實際送出的訊息文字是完整的樣板「`綁定 {Sheet ID}`」（`_BUTTONS` 三元組的第三個欄位），按下後由 `_handle_set()` 的佔位符判斷接住並導向引導訊息，按鈕文字同時兼作語法示範。`python scripts/setup_line_richmenu.py --dry-run` 可只產生預覽圖（`scripts/richmenu_preview.png`，不進版控）不呼叫任何 LINE API；不加參數執行則會**直接覆蓋正式環境的預設選單**，執行前需確認 `.env` 的 `LINE_CHANNEL_ACCESS_TOKEN` 為正確頻道。之後如需美術設計圖，可直接替換 `generate_image()` 產生的圖片來源，只要維持相同的按鈕座標即可沿用既有的 `_build_areas()` 綁定邏輯。
+
+## 引導圖片（新手教學／綁定的空參數或佔位符）
+
+`app/core/dispatcher.py` 的 `handle_text_with_media()`（供 adapter 呼叫，`handle_text()` 本身簽章不變）在「新手教學」指令，或「綁定」指令參數為空/樣板佔位符時，於引導文字之後額外回傳一張圖片 URL：`{WEB_BASE_URL}/images/copy-sheet-link.jpg`（沿用既有的 `settings.web_base_url`，未另外新增環境變數）。內容為手機版 Google Sheets「共用與匯出 → 複製連結」的操作步驟，來源截圖 `scripts/onboarding_src/step1~3.jpg`，由 `scripts/make_onboarding_image.py` 合併產生（`--dry-run` 預覽到 `scripts/onboarding_preview.jpg`，不進版控；正式輸出到 `web/images/copy-sheet-link.jpg`，隨 GitHub Actions 一併發布）。LINE 透過 `reply_message()`/`push_message()` 的 `image_url` 參數在文字之後追加一則 image 訊息；Telegram 透過 `telegram_client.send_photo()`（`sendPhoto`）在 `sendMessage` 之後額外呼叫一次。LINE 加好友（`follow` 事件）與 Telegram 首次對話的 `/start` 也會帶圖。

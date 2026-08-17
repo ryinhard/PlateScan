@@ -106,22 +106,25 @@ async def test_dispatch_event_non_ok_text_does_not_trigger_loading_animation(
     assert loading_calls == []
 
 
-async def test_dispatch_event_follow_replies_with_onboarding_text(
+async def test_dispatch_event_follow_replies_with_onboarding_text_and_image(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(dispatcher, "get_onboarding_text", lambda: "歡迎使用 PlateScan！")
+    monkeypatch.setattr(
+        dispatcher, "get_onboarding_image_url", lambda: "https://example.com/pic.jpg"
+    )
 
-    reply_calls: list[tuple[str, str]] = []
+    reply_calls: list[tuple] = []
 
-    async def _fake_reply(reply_token: str, text: str) -> None:
-        reply_calls.append((reply_token, text))
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
+        reply_calls.append((reply_token, text, image_url))
 
     monkeypatch.setattr(line_client, "reply_message", _fake_reply)
 
     background_tasks = BackgroundTasks()
     await line_adapter._dispatch_event(_follow_event(), background_tasks)
 
-    assert reply_calls == [("token-1", "歡迎使用 PlateScan！")]
+    assert reply_calls == [("token-1", "歡迎使用 PlateScan！", "https://example.com/pic.jpg")]
     assert background_tasks.tasks == []  # follow 事件同步處理，不排背景任務
 
 
@@ -129,14 +132,17 @@ async def test_dispatch_event_follow_falls_back_to_push_when_reply_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(dispatcher, "get_onboarding_text", lambda: "歡迎使用 PlateScan！")
+    monkeypatch.setattr(
+        dispatcher, "get_onboarding_image_url", lambda: "https://example.com/pic.jpg"
+    )
 
-    async def _fake_reply(reply_token: str, text: str) -> None:
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
         raise RuntimeError("reply token 已使用過")
 
-    push_calls: list[tuple[str, str]] = []
+    push_calls: list[tuple] = []
 
-    async def _fake_push(user_id: str, text: str) -> None:
-        push_calls.append((user_id, text))
+    async def _fake_push(user_id: str, text: str, image_url=None) -> None:
+        push_calls.append((user_id, text, image_url))
 
     monkeypatch.setattr(line_client, "reply_message", _fake_reply)
     monkeypatch.setattr(line_client, "push_message", _fake_push)
@@ -144,25 +150,25 @@ async def test_dispatch_event_follow_falls_back_to_push_when_reply_fails(
     background_tasks = BackgroundTasks()
     await line_adapter._dispatch_event(_follow_event(), background_tasks)
 
-    assert push_calls == [("U1", "歡迎使用 PlateScan！")]
+    assert push_calls == [("U1", "歡迎使用 PlateScan！", "https://example.com/pic.jpg")]
 
 
 async def test_process_text_reply_uses_reply_within_time_limit(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    async def _fake_handle_text(user_key: str, text: str):
-        return "已記錄"
+    async def _fake_handle_text_with_media(user_key: str, text: str):
+        return "已記錄", None
 
-    reply_calls: list[tuple[str, str]] = []
-    push_calls: list[tuple[str, str]] = []
+    reply_calls: list[tuple] = []
+    push_calls: list[tuple] = []
 
-    async def _fake_reply(reply_token: str, text: str) -> None:
-        reply_calls.append((reply_token, text))
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
+        reply_calls.append((reply_token, text, image_url))
 
-    async def _fake_push(user_id: str, text: str) -> None:
-        push_calls.append((user_id, text))
+    async def _fake_push(user_id: str, text: str, image_url=None) -> None:
+        push_calls.append((user_id, text, image_url))
 
-    monkeypatch.setattr(dispatcher, "handle_text", _fake_handle_text)
+    monkeypatch.setattr(dispatcher, "handle_text_with_media", _fake_handle_text_with_media)
     monkeypatch.setattr(line_client, "reply_message", _fake_reply)
     monkeypatch.setattr(line_client, "push_message", _fake_push)
 
@@ -170,26 +176,49 @@ async def test_process_text_reply_uses_reply_within_time_limit(
         "line:U1", "今日", "U1", "token-1", time.monotonic()
     )
 
-    assert reply_calls == [("token-1", "已記錄")]
+    assert reply_calls == [("token-1", "已記錄", None)]
     assert push_calls == []
+
+
+async def test_process_text_reply_passes_through_image_url(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """新手教學／綁定的空參數或佔位符情境會帶圖，image_url 須原樣轉交給 reply_message。"""
+
+    async def _fake_handle_text_with_media(user_key: str, text: str):
+        return "歡迎使用 PlateScan！", "https://example.com/pic.jpg"
+
+    reply_calls: list[tuple] = []
+
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
+        reply_calls.append((reply_token, text, image_url))
+
+    monkeypatch.setattr(dispatcher, "handle_text_with_media", _fake_handle_text_with_media)
+    monkeypatch.setattr(line_client, "reply_message", _fake_reply)
+
+    await line_adapter._process_text_reply(
+        "line:U1", "新手教學", "U1", "token-1", time.monotonic()
+    )
+
+    assert reply_calls == [("token-1", "歡迎使用 PlateScan！", "https://example.com/pic.jpg")]
 
 
 async def test_process_text_reply_falls_back_to_push_when_elapsed_too_long(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    async def _fake_handle_text(user_key: str, text: str):
-        return "已記錄"
+    async def _fake_handle_text_with_media(user_key: str, text: str):
+        return "已記錄", None
 
-    reply_calls: list[tuple[str, str]] = []
-    push_calls: list[tuple[str, str]] = []
+    reply_calls: list[tuple] = []
+    push_calls: list[tuple] = []
 
-    async def _fake_reply(reply_token: str, text: str) -> None:
-        reply_calls.append((reply_token, text))
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
+        reply_calls.append((reply_token, text, image_url))
 
-    async def _fake_push(user_id: str, text: str) -> None:
-        push_calls.append((user_id, text))
+    async def _fake_push(user_id: str, text: str, image_url=None) -> None:
+        push_calls.append((user_id, text, image_url))
 
-    monkeypatch.setattr(dispatcher, "handle_text", _fake_handle_text)
+    monkeypatch.setattr(dispatcher, "handle_text_with_media", _fake_handle_text_with_media)
     monkeypatch.setattr(line_client, "reply_message", _fake_reply)
     monkeypatch.setattr(line_client, "push_message", _fake_push)
 
@@ -199,24 +228,24 @@ async def test_process_text_reply_falls_back_to_push_when_elapsed_too_long(
     )
 
     assert reply_calls == []
-    assert push_calls == [("U1", "已記錄")]
+    assert push_calls == [("U1", "已記錄", None)]
 
 
 async def test_process_text_reply_falls_back_to_push_when_reply_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    async def _fake_handle_text(user_key: str, text: str):
-        return "已記錄"
+    async def _fake_handle_text_with_media(user_key: str, text: str):
+        return "已記錄", None
 
-    async def _fake_reply(reply_token: str, text: str) -> None:
+    async def _fake_reply(reply_token: str, text: str, image_url=None) -> None:
         raise RuntimeError("reply token 已使用過")
 
-    push_calls: list[tuple[str, str]] = []
+    push_calls: list[tuple] = []
 
-    async def _fake_push(user_id: str, text: str) -> None:
-        push_calls.append((user_id, text))
+    async def _fake_push(user_id: str, text: str, image_url=None) -> None:
+        push_calls.append((user_id, text, image_url))
 
-    monkeypatch.setattr(dispatcher, "handle_text", _fake_handle_text)
+    monkeypatch.setattr(dispatcher, "handle_text_with_media", _fake_handle_text_with_media)
     monkeypatch.setattr(line_client, "reply_message", _fake_reply)
     monkeypatch.setattr(line_client, "push_message", _fake_push)
 
@@ -224,21 +253,21 @@ async def test_process_text_reply_falls_back_to_push_when_reply_fails(
         "line:U1", "ok", "U1", "token-1", time.monotonic()
     )
 
-    assert push_calls == [("U1", "已記錄")]
+    assert push_calls == [("U1", "已記錄", None)]
 
 
 async def test_process_text_reply_does_nothing_when_no_reply_text(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    async def _fake_handle_text(user_key: str, text: str):
-        return None
+    async def _fake_handle_text_with_media(user_key: str, text: str):
+        return None, None
 
     calls: list[str] = []
 
     async def _fail_if_called(*args, **kwargs) -> None:
         calls.append("called")
 
-    monkeypatch.setattr(dispatcher, "handle_text", _fake_handle_text)
+    monkeypatch.setattr(dispatcher, "handle_text_with_media", _fake_handle_text_with_media)
     monkeypatch.setattr(line_client, "reply_message", _fail_if_called)
     monkeypatch.setattr(line_client, "push_message", _fail_if_called)
 

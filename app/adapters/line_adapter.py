@@ -102,30 +102,31 @@ async def _handle_follow_event(event: dict) -> None:
         return
 
     onboarding_text = dispatcher.get_onboarding_text()
+    image_url = dispatcher.get_onboarding_image_url()
     reply_token = event.get("replyToken", "")
 
     if reply_token:
         try:
-            await line_client.reply_message(reply_token, onboarding_text)
+            await line_client.reply_message(reply_token, onboarding_text, image_url)
             return
         except Exception as exc:
             logger.warning("LINE follow 事件 Reply 失敗，改用 Push user_id=%s：%s", user_id, exc)
 
-    await line_client.push_message(user_id, onboarding_text)
+    await line_client.push_message(user_id, onboarding_text, image_url)
 
 
 async def _process_text_reply(
     user_key: str, text: str, user_id: str, reply_token: str, received_at: float
 ) -> None:
     """背景執行文字指令處理，並依耗時決定以 Reply（0 成本）或 Push（降級 fallback）回覆。"""
-    reply_text = await dispatcher.handle_text(user_key, text)
+    reply_text, image_url = await dispatcher.handle_text_with_media(user_key, text)
     if not reply_text:
         return
 
     elapsed = time.monotonic() - received_at
     if reply_token and elapsed <= _REPLY_TOKEN_LIMIT_SECONDS:
         try:
-            await line_client.reply_message(reply_token, reply_text)
+            await line_client.reply_message(reply_token, reply_text, image_url)
             return
         except Exception as exc:
             logger.warning(
@@ -135,4 +136,4 @@ async def _process_text_reply(
                 exc,
             )
 
-    await line_client.push_message(user_id, reply_text)
+    await line_client.push_message(user_id, reply_text, image_url)

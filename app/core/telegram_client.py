@@ -1,6 +1,7 @@
 """Telegram Bot API 客戶端（M6：透過 sendMessage 送出回覆文字；M11：setMyCommands 註冊指令選單）。"""
 
 import logging
+from typing import Optional
 
 import httpx
 
@@ -9,6 +10,7 @@ from app.config import settings
 logger = logging.getLogger("app.core.telegram_client")
 
 _SEND_MESSAGE_URL = "https://api.telegram.org/bot{token}/sendMessage"
+_SEND_PHOTO_URL = "https://api.telegram.org/bot{token}/sendPhoto"
 _SET_MY_COMMANDS_URL = "https://api.telegram.org/bot{token}/setMyCommands"
 
 # Telegram 指令名稱僅接受英文小寫/數字/底線，對應 app.core.dispatcher 的英文別名
@@ -43,6 +45,18 @@ async def send_message(chat_id: int, text: str) -> None:
         await _post(url, {"chat_id": chat_id, "text": text})
     except Exception as exc:
         logger.warning("Telegram sendMessage 送出失敗 chat_id=%s：%s", chat_id, exc)
+
+
+async def send_photo(chat_id: int, photo_url: str, caption: Optional[str] = None) -> None:
+    """呼叫 Telegram sendPhoto 送出圖片訊息，失敗僅記錄警告不中斷流程。"""
+    url = _SEND_PHOTO_URL.format(token=settings.telegram_bot_token)
+    body: dict = {"chat_id": chat_id, "photo": photo_url}
+    if caption:
+        body["caption"] = caption
+    try:
+        await _post(url, body)
+    except Exception as exc:
+        logger.warning("Telegram sendPhoto 送出失敗 chat_id=%s：%s", chat_id, exc)
 
 
 async def set_my_commands() -> None:

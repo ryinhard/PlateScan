@@ -29,7 +29,7 @@ _HELP_TEXT = (
     "修正 熱量 700（/fix）→ 修正最近一筆紀錄的數值或餐次（可一次修正多項）\n"
     "修改日期 2026/08/17（/setdate）→ 修正最近一筆紀錄的日期\n"
     "刪除（/delete）→ 刪除最近一筆紀錄\n"
-    "設定 {Sheet ID}（/set）→ 綁定/更換個人 Google Sheet\n"
+    "綁定 {Sheet ID}（/set）→ 綁定/更換個人 Google Sheet\n"
     "設定目標 熱量 2000（/setgoal）→ 設定每日營養目標\n"
     "目標（/goal）→ 查詢每日營養目標\n"
     "取消（/cancel）→ 清空目前緩衝區\n"
@@ -66,7 +66,7 @@ _PREFIX_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "correct": frozenset({"修正", "fix"}),
     "correct_date": frozenset({"修改日期", "setdate"}),
     "goal_set": frozenset({"設定目標", "setgoal"}),
-    "set_sheet": frozenset({"設定", "set"}),
+    "set_sheet": frozenset({"綁定", "設定", "set"}),
 }
 
 
@@ -125,12 +125,24 @@ def get_onboarding_text() -> str:
         "2. 右上角「共用」，在同一個視窗完成兩件事：\n"
         f"(1) 新增編輯者：{email}\n"
         "(2) 把「一般存取權」改為「知道連結的任何人」＋「檢視者」（供之後使用圖表功能）\n"
-        "3. 回來這裡輸入「設定 {Sheet ID}」（可直接貼網址），Bot 會自動建立需要的工作表\n"
+        "3. 回來這裡輸入「綁定 {Sheet ID}」（可直接貼網址），Bot 會自動建立需要的工作表\n"
         "\n"
         "綁定後即可開始：傳照片或輸入餐點文字 → 輸入「ok」觸發辨識記錄。\n"
         f"{_GOAL_REMINDER}。\n"
         "輸入「說明」可查看完整指令列表。"
     )
+
+
+def get_onboarding_image_url() -> Optional[str]:
+    """新手引導圖片（手機版 Google Sheets「共用與匯出→複製連結」操作步驟）的公開網址。
+
+    沿用既有 settings.web_base_url（與「圖表」指令組連結用的同一個值），不另外新增
+    環境變數；未設定時回傳 None（文字引導仍會照常送出，只是不附圖）。
+    供 handle_text_with_media() 與 LINE follow 事件（app/adapters/line_adapter.py）共用。
+    """
+    if not settings.web_base_url:
+        return None
+    return f"{settings.web_base_url}/images/copy-sheet-link.jpg"
 
 
 _CORRECT_FIELD_ALIASES = {
@@ -234,6 +246,26 @@ async def handle_text(user_key: str, text: str) -> Optional[str]:
         return "處理時發生錯誤，請稍後再試一次"
 
 
+async def handle_text_with_media(user_key: str, text: str) -> tuple[Optional[str], Optional[str]]:
+    """回傳 (回覆文字, 圖片 URL)，供 adapter 在引導訊息後額外送一則圖片訊息。
+
+    handle_text() 的回傳型別（Optional[str]）已被兩個 adapter 與大量測試依賴，
+    刻意不更動它；改為新增本函式，內部先取得 handle_text() 的文字結果，
+    再另外呼叫一次 _resolve_command()（純函式、無 IO，重複呼叫成本可忽略）
+    判斷本次指令是否為「新手教學」、或是「綁定」且參數為空/佔位符——
+    只有這兩種情境才附上圖片 URL，其餘情境圖片 URL 一律為 None。
+    """
+    reply = await handle_text(user_key, text)
+    if reply is None:
+        return None, None
+
+    command, args = _resolve_command(text.strip())
+    needs_image = command == "onboarding" or (
+        command == "set_sheet" and (not args or _is_placeholder(args))
+    )
+    return reply, (get_onboarding_image_url() if needs_image else None)
+
+
 async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
     """依指令分派文字訊息：`ok` 觸發辨識與寫入、`今日` 查詢累計，其餘文字視為餐點描述追加至緩衝區。"""
     stripped = text.strip()
@@ -298,7 +330,7 @@ async def _handle_ok(user_key: str) -> Optional[str]:
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
         logger.warning("user_key=%s 尚未綁定個人 Google Sheet，略過寫入 daily_log", user_key)
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     # 用量控管必須擋在下載照片與呼叫 Gemini「之前」，否則額度照樣消耗；
     # 且超限時刻意不清空 buffer，讓使用者隔天直接傳 ok 就能接續辨識。
@@ -375,7 +407,7 @@ async def _handle_ok(user_key: str) -> Optional[str]:
 async def _handle_today(user_key: str) -> str:
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     date = datetime.now(_TAIPEI_TZ).strftime("%Y/%m/%d")
     rows = await sheets.get_daily_log_rows(user["google_sheet_id"], date)
@@ -397,7 +429,7 @@ async def _handle_today(user_key: str) -> str:
 async def _handle_chart(user_key: str) -> str:
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     if not settings.web_base_url:
         logger.warning("WEB_BASE_URL 尚未設定，無法組出 PWA 儀表板連結")
@@ -414,7 +446,7 @@ async def _handle_chart(user_key: str) -> str:
 async def _handle_link(user_key: str) -> str:
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     return f"https://docs.google.com/spreadsheets/d/{user['google_sheet_id']}/edit"
 
@@ -470,7 +502,7 @@ async def _handle_correct(user_key: str, args: list[str]) -> str:
 
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     updated = await sheets.update_latest_daily_log_fields(user["google_sheet_id"], updates)
     if not updated:
@@ -493,7 +525,7 @@ async def _handle_delete(user_key: str) -> str:
     """
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     deleted = await sheets.delete_latest_daily_log_row(user["google_sheet_id"])
     if deleted is None:
@@ -519,9 +551,27 @@ def _extract_sheet_id(raw: str) -> str:
     return match.group(1) if match else raw
 
 
+def _is_placeholder(args: list[str]) -> bool:
+    """判斷本次參數是否為未替換的樣板文字（如「{Sheet ID}」），而非真正的 Sheet ID/網址。
+
+    大括號內含空白（"{Sheet ID}"），_resolve_command() 依空白切分後會變成兩個
+    token（"{Sheet"、"ID}"），故合併回單一字串再判斷開頭/結尾字元，不能只看第一個 token。
+    刻意用「同時以 { 開頭、} 結尾」而非「是否含 {」這種寬鬆條件——Sheet ID 本身不含
+    大括號，但寬鬆條件會讓格式錯誤的輸入也被靜默導向引導訊息。
+    """
+    joined = " ".join(args).strip()
+    return joined.startswith("{") and joined.endswith("}")
+
+
 async def _handle_set(user_key: str, args: list[str]) -> str:
+    # 無參數（使用者只打「綁定」）或貼上樣板文字（Rich Menu 按鈕送出的
+    # 「綁定 {Sheet ID}」、或照抄教學把 {Sheet ID} 一起貼上）時，
+    # 不回格式錯誤，改回完整的綁定步驟引導。
+    if not args or _is_placeholder(args):
+        return get_onboarding_text()
+
     if len(args) != 1:
-        return "指令格式錯誤，請使用「設定 {Sheet ID}」（可直接貼 Google Sheets 網址）"
+        return "指令格式錯誤，請使用「綁定 {Sheet ID}」（可直接貼 Google Sheets 網址）"
 
     google_sheet_id = _extract_sheet_id(args[0])
 
@@ -534,7 +584,7 @@ async def _handle_set(user_key: str, args: list[str]) -> str:
             "無法存取這個 Google Sheet，請確認：\n"
             "1. Sheet ID／網址正確\n"
             f"2. 已將此 Sheet 分享給 {email}（權限選「編輯者」）\n"
-            "完成後請重新輸入一次「設定 {Sheet ID}」"
+            "完成後請重新輸入一次「綁定 {Sheet ID}」"
         )
 
     existing_user = await sheets.get_user(user_key)
@@ -558,7 +608,7 @@ async def _handle_cancel(user_key: str) -> str:
 async def _handle_goal(user_key: str) -> str:
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     goals = await sheets.get_goals(user["google_sheet_id"])
     if not goals:
@@ -612,7 +662,7 @@ async def _handle_goal_set(user_key: str, args: list[str]) -> str:
 
     user = await sheets.get_user(user_key)
     if not user or not user.get("google_sheet_id"):
-        return "尚未綁定個人 Google Sheet，請先輸入「設定 {Sheet ID}」完成綁定"
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
 
     # goals 工作表為逐列 find-or-append（無批次 API），故多項時逐項寫入；
     # 格式驗證已全部完成，此處只剩網路/API 層級的失敗可能。

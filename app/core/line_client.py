@@ -5,6 +5,7 @@
 """
 
 import logging
+from typing import Optional
 
 import httpx
 
@@ -42,21 +43,32 @@ async def start_loading_animation(
         logger.warning("啟動 LINE Loading Animation 失敗 user_id=%s：%s", user_id, exc)
 
 
-async def reply_message(reply_token: str, text: str) -> None:
+def _build_messages(text: str, image_url: Optional[str]) -> list[dict]:
+    messages: list[dict] = [{"type": "text", "text": text}]
+    if image_url:
+        messages.append(
+            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}
+        )
+    return messages
+
+
+async def reply_message(reply_token: str, text: str, image_url: Optional[str] = None) -> None:
     """以 replyToken 回覆訊息（0 成本）。reply token 過期／已使用時會拋出例外，
     由呼叫端捕捉後改用 push_message() 降級 fallback。
+
+    image_url 有值時額外附加一則圖片訊息（reply 單次最多 5 則，帶圖不額外消耗額度）。
     """
     await _post(
         _REPLY_URL,
-        {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]},
+        {"replyToken": reply_token, "messages": _build_messages(text, image_url)},
     )
 
 
-async def push_message(user_id: str, text: str) -> None:
+async def push_message(user_id: str, text: str, image_url: Optional[str] = None) -> None:
     """以 Push Message 送出訊息（降級 fallback，計入額度），失敗僅記錄警告。"""
     try:
         await _post(
-            _PUSH_URL, {"to": user_id, "messages": [{"type": "text", "text": text}]}
+            _PUSH_URL, {"to": user_id, "messages": _build_messages(text, image_url)}
         )
     except Exception as exc:
         logger.warning("LINE Push Message 送出失敗 user_id=%s：%s", user_id, exc)

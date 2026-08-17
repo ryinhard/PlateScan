@@ -1,4 +1,4 @@
-const CACHE_NAME = 'platescan-dashboard-v5';
+const CACHE_NAME = 'platescan-dashboard-v6';
 const ASSETS = [
   '.',
   'index.html',

@@ -27,6 +27,8 @@ Thumbs.db
 TODO.md
 CLAUDE.md
 NOTES.md
+next_prompt.md
 
-# scripts/setup_line_richmenu.py --dry-run 產生的本機預覽圖，非版控內容
+# --dry-run 產生的本機預覽圖，非版控內容（正式產物分別為 LINE Rich Menu 與 web/images/）
 scripts/richmenu_preview.png
+scripts/onboarding_preview.jpg
