@@ -546,6 +546,101 @@ async def test_handle_text_returns_fallback_reply_when_unexpected_error_occurs(
     assert reply == "處理時發生錯誤，請稍後再試一次"
 
 
+# --- 「修正品項」指令（M19：獨立指令，品項值可含空白） ---
+
+
+@pytest.fixture
+def spy_update_fields(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        calls.append((google_sheet_id, fields))
+        return True
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
+    return calls
+
+
+async def test_handle_text_correct_items_command_updates_items(
+    spy_append: list[tuple[str, str, str]],
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    reply = await dispatcher.handle_text("line:U1", "修正品項 雞腿便當")
+
+    assert spy_append == []  # 不應被當成一般餐點描述暫存
+    assert spy_update_fields == [("sheet-abc", {"items": "雞腿便當"})]
+    assert reply == "已將最近一筆紀錄的品項修正為「雞腿便當」"
+
+
+async def test_handle_text_correct_items_command_keeps_value_with_spaces(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    """核心迴歸點：品項含空白時，第一個詞之後的整串都要視為品項內容。
+
+    這正是「修正品項」獨立成一個指令、而非併入「修正」欄位別名的理由——
+    「修正」是成對解析，「修正 品項 雞腿便當 味噌湯」會錯拆成兩組欄位/值。
+    """
+    reply = await dispatcher.handle_text("line:U1", "修正品項 雞腿便當 味噌湯")
+
+    assert spy_update_fields == [("sheet-abc", {"items": "雞腿便當 味噌湯"})]
+    assert reply == "已將最近一筆紀錄的品項修正為「雞腿便當 味噌湯」"
+
+
+async def test_handle_text_correct_items_command_rejects_empty_value(
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    reply = await dispatcher.handle_text("line:U1", "修正品項")
+
+    assert spy_append == []
+    assert reply is not None and reply.startswith("指令格式錯誤，請使用「修正品項")
+    assert "品項名稱可以含空白" in reply
+
+
+async def test_handle_text_correct_items_command_accepts_slash_alias_with_bot_suffix(
+    spy_update_fields: list[tuple[str, dict]],
+    fake_user,
+):
+    reply = await dispatcher.handle_text("line:U1", "/fixitems@PlateScanBot 雞腿便當")
+
+    assert spy_update_fields == [("sheet-abc", {"items": "雞腿便當"})]
+    assert reply == "已將最近一筆紀錄的品項修正為「雞腿便當」"
+
+
+async def test_handle_text_correct_items_returns_message_when_no_record(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_user,
+):
+    async def _fake_update(google_sheet_id: str, fields: dict):
+        return False
+
+    monkeypatch.setattr(sheets, "update_latest_daily_log_fields", _fake_update)
+
+    reply = await dispatcher.handle_text("line:U1", "修正品項 雞腿便當")
+
+    assert reply == "尚無可修正的紀錄"
+
+
+async def test_handle_text_correct_with_items_field_redirects_to_dedicated_command(
+    spy_append: list[tuple[str, str, str]],
+    fake_user,
+):
+    """使用者習慣性打成「修正 品項 ...」時，要給指路訊息而非泛用的「不支援的欄位」。"""
+    reply = await dispatcher.handle_text("line:U1", "修正 品項 雞腿便當")
+
+    assert spy_append == []
+    assert reply is not None and reply.startswith("修正品項請使用獨立指令")
+    assert "不支援的欄位" not in reply
+
+
+async def test_correct_field_aliases_still_exclude_items():
+    """「品項」不可被加回 _CORRECT_FIELD_ALIASES，否則成對解析會再次吃掉含空白的品項值。"""
+    assert "品項" not in dispatcher._CORRECT_FIELD_ALIASES
+    assert "items" not in dispatcher._CORRECT_FIELD_ALIASES.values()
+
+
 # --- 「說明」指令 ---
 
 

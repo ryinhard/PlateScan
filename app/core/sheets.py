@@ -355,6 +355,7 @@ async def delete_latest_daily_log_row(google_sheet_id: str) -> Optional[dict[str
 _DAILY_LOG_FIELD_COLUMNS = {
     "date": "A",
     "meal": "B",
+    "items": "C",
     "calories": "D",
     "carbs_g": "E",
     "protein_g": "F",

@@ -29,6 +29,7 @@ _HELP_TEXT = (
     "●連結 / 原始表單（/link）→ 個人Google Sheet連結\n"
     "●綁定 {Sheet ID}（/set）→ 綁定/更換個人Google Sheet\n"
     "●修正 熱量 700（/fix）→ 修正最近一筆的紀錄，可修正數值、餐次、日期\n"
+    "●修正品項 雞腿便當（/fixitems）→ 修正最近一筆紀錄的品項名稱\n"
     "●修正範例（/fixhelp）→ 提供修正指令範例\n"
     "●修改日期 2026/08/17（/setdate）→ 修正最近一筆紀錄的日期\n"
     "●刪除（/delete）→ 刪除最近一筆紀錄\n"
@@ -69,8 +70,11 @@ _EXACT_COMMAND_ALIASES: dict[str, frozenset[str]] = {
 # 「設定目標」須排在別名集合中優先於「設定」比對（兩者是不同的完整詞，不會互相前綴衝突）。
 # 「meal_set」必須排在「set_sheet」之前：set_sheet 的別名含「設定」，順序錯了
 # 「設定餐次 晚餐 17:30」會被當成綁定指令吃掉（靜默走錯分支、不會報錯）。
+# 反之「correct_items」與「correct」順序無關——比對是「第一個詞完全等於別名」而非
+# 前綴比對，「修正品項」與「修正」是兩個不同的完整詞，不會互相吃掉。
 _PREFIX_COMMAND_ALIASES: dict[str, frozenset[str]] = {
     "correct": frozenset({"修正", "fix"}),
+    "correct_items": frozenset({"修正品項", "fixitems"}),
     "correct_date": frozenset({"修改日期", "setdate"}),
     "goal_set": frozenset({"設定目標", "setgoal"}),
     "meal_set": frozenset({"設定餐次", "setmeal"}),
@@ -169,7 +173,21 @@ _FIXHELP_TEXT = (
     "修正 餐次 午餐 → 修正餐次（早餐/午餐/下午茶/晚餐/宵夜）\n"
     "修正 日期 2026/08/17 → 修正日期（等同「修改日期 2026/08/17」）\n"
     "修正 熱量 700 蛋白質 30 → 一次修正多項\n"
+    "修正品項 雞腿便當、味噌湯 → 修正品項（獨立指令，品項可含空白）\n"
     f"可用欄位：{_CORRECT_FIELD_LIST}"
+)
+
+# 「品項」刻意不放進 _CORRECT_FIELD_ALIASES：品項值常含空白（「雞腿便當 味噌湯」），
+# 而 _handle_correct() 是「欄位 值」成對解析，含空白的值會被切成多個 token 而錯亂。
+# 故獨立成「修正品項」指令（第一個詞之後整串視為品項內容）。但使用者很可能仍習慣性
+# 打成「修正 品項 xxx」，此時會落到未知欄位分支，需要這段引導而非泛用的「不支援的欄位」。
+_CORRECT_ITEMS_REDIRECT = (
+    "修正品項請使用獨立指令「修正品項 雞腿便當、味噌湯」（中間不用空格，品項名稱可含空白）"
+)
+
+_CORRECT_ITEMS_FORMAT_ERROR = (
+    "指令格式錯誤，請使用「修正品項 雞腿便當、味噌湯」\n"
+    "品項名稱可以含空白，第一個詞之後的整句都會被視為品項內容"
 )
 
 # 「修改日期 昨天」等相對日期說法，值為相對今日（Asia/Taipei）的天數差。
@@ -416,6 +434,9 @@ async def _dispatch_text(user_key: str, text: str) -> Optional[str]:
     if command == "correct":
         return await _handle_correct(user_key, args)
 
+    if command == "correct_items":
+        return await _handle_correct_items(user_key, args)
+
     if command == "correct_date":
         # 「修改日期 2026/08/17」與「修正 日期 2026/08/17」是同一件事，
         # 兩種說法都保留，內部統一導向 _handle_correct 處理。
@@ -613,6 +634,8 @@ async def _handle_correct(user_key: str, args: list[str]) -> str:
     for field_label, raw_value in zip(args[::2], args[1::2]):
         field = _CORRECT_FIELD_ALIASES.get(field_label)
         if field is None:
+            if field_label == "品項":
+                return _CORRECT_ITEMS_REDIRECT
             return f"不支援的欄位「{field_label}」，可用欄位：{_CORRECT_FIELD_LIST}"
         if field in updates:
             return f"欄位「{field_label}」重複出現，請每個欄位只指定一次"
@@ -638,6 +661,28 @@ async def _handle_correct(user_key: str, args: list[str]) -> str:
         return f"已將最近一筆紀錄的{field_label}修正為 {value}"
 
     return "已修正最近一筆紀錄：\n" + "\n".join(changes)
+
+
+async def _handle_correct_items(user_key: str, args: list[str]) -> str:
+    """處理「修正品項 雞腿便當、味噌湯」：修改最近一筆紀錄的品項名稱。
+
+    與 `修正` 的成對解析不同，這裡把第一個詞之後的**整串文字**視為品項內容
+    （以單一半形空白重新接合），因此品項可以含空白。品項是自由文字、
+    沒有格式可驗證，唯一的檢查是不得為空。
+    """
+    value = " ".join(args).strip()
+    if not value:
+        return _CORRECT_ITEMS_FORMAT_ERROR
+
+    user = await sheets.get_user(user_key)
+    if not user or not user.get("google_sheet_id"):
+        return "尚未綁定個人 Google Sheet，請先輸入「綁定 {Sheet ID}」完成綁定"
+
+    updated = await sheets.update_latest_daily_log_fields(user["google_sheet_id"], {"items": value})
+    if not updated:
+        return "尚無可修正的紀錄"
+
+    return f"已將最近一筆紀錄的品項修正為「{value}」"
 
 
 async def _handle_delete(user_key: str) -> str:
