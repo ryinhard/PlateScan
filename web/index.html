@@ -63,6 +63,16 @@ body {
 .nav-views button.active { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
 .nav-views button:hover:not(.active) { background: #f2f4f7; }
 
+/* Chart dimension toggle (營養素 ↔ 餐次，僅週/月視圖顯示) */
+.dimension-toggle { display: none; gap: 4px; margin-bottom: 8px; justify-content: flex-end; }
+.dimension-toggle button {
+  padding: 4px 10px; border: 1px solid #d0d5dd; background: #fff;
+  border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; color: #667085;
+  transition: all .15s; touch-action: manipulation;
+}
+.dimension-toggle button.active { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+.dimension-toggle button:hover:not(.active) { background: #f2f4f7; }
+
 /* Data Source Bar */
 .data-bar {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
@@ -264,6 +274,10 @@ body {
 
   <!-- Chart -->
   <div class="chart-wrap">
+    <div class="dimension-toggle" id="dimensionToggle">
+      <button id="dimNutrient" class="active" onclick="setDimension('nutrient')">📈 營養素</button>
+      <button id="dimMeal" onclick="setDimension('meal')">🍽️ 餐次</button>
+    </div>
     <canvas id="mainChart"></canvas>
     <div id="emptyState" class="empty-state" style="display:none">
       <div class="icon">📊</div>
@@ -386,6 +400,7 @@ const state = {
   data: {},
   dates: [],
   view: 'day',
+  dimension: 'nutrient',  // 'nutrient' | 'meal'，僅週/月視圖有意義
   cursor: new Date(),
   chart: null,
   targets: {
@@ -406,6 +421,58 @@ const NUTRIENTS = [
 ];
 
 const GVIZ_SHEET_NAME = 'daily_log';
+
+// 餐次分布圖用：五種固定餐次（順序與後端 app/core/dispatcher.py 的 _MEAL_NAMES 一致）
+// + 第六個「其他」桶，接住未知/自訂/空白的 meal 值。
+const MEAL_ORDER = ['早餐', '午餐', '下午茶', '晚餐', '宵夜'];
+// 「消夜」是「宵夜」的異體寫法，與後端 _MEAL_NAME_ALIASES 同一組（僅此一組）。
+// 前端必須自己再正規化一次：使用者可能直接在 Google Sheet 手動打「消夜」或
+// 上傳自製 CSV，完全繞過後端的正規化邏輯。
+const MEAL_NAME_ALIASES = { '消夜': '宵夜' };
+const OTHER_MEAL_BUCKET = '其他';
+const MEAL_BUCKET_ORDER = [...MEAL_ORDER, OTHER_MEAL_BUCKET];
+
+// meal 原始文字 → 五種固定桶之一，或未知值一律歸入「其他」。
+// 只影響「餐次分布圖」的分組，不影響 renderFoodList() 的明細顯示（明細維持原始文字）。
+function classifyMeal(rawMeal) {
+  const trimmed = (rawMeal || '').trim();
+  const normalized = MEAL_NAME_ALIASES[trimmed] || trimmed;
+  return MEAL_ORDER.includes(normalized) ? normalized : OTHER_MEAL_BUCKET;
+}
+
+// 依餐次彙總 dates 範圍內的資料，回傳六個固定桶（五餐次 + 其他）依序排列的陣列。
+// 熱量換算用 4/4/9 kcal per g；平均值除以 dates.length（範圍內「有記錄」的天數，
+// 與既有 renderSummary()/renderWeekChart() 的週期平均計算基準一致）。
+function aggregateByMeal(dates) {
+  const buckets = {};
+  MEAL_BUCKET_ORDER.forEach(m => { buckets[m] = { carbsCal: 0, proteinCal: 0, fatCal: 0, count: 0 }; });
+
+  for (const d of dates) {
+    const day = state.data[d];
+    if (!day) continue;
+    for (const item of day.meals) {
+      const bucket = buckets[classifyMeal(item.meal)];
+      bucket.carbsCal += item.carbs * 4;
+      bucket.proteinCal += item.protein * 4;
+      bucket.fatCal += item.fat * 9;
+      bucket.count += 1;
+    }
+  }
+
+  const denom = dates.length || 1;
+  return MEAL_BUCKET_ORDER.map(m => {
+    const b = buckets[m];
+    const carbsCal = Math.round(b.carbsCal / denom * 10) / 10;
+    const proteinCal = Math.round(b.proteinCal / denom * 10) / 10;
+    const fatCal = Math.round(b.fatCal / denom * 10) / 10;
+    return {
+      meal: m,
+      carbsCal, proteinCal, fatCal,
+      total: Math.round((carbsCal + proteinCal + fatCal) * 10) / 10,
+      count: b.count,
+    };
+  });
+}
 
 // ==================== Utils ====================
 function showToast(msg) {
@@ -769,6 +836,21 @@ function setView(v) {
   updateAll();
 }
 
+// 「營養素 ↔ 餐次」維度切換，與日/週/月視圖正交，僅週/月視圖顯示（見 updateDimensionToggleVisibility()）。
+function setDimension(dim) {
+  state.dimension = dim;
+  document.querySelectorAll('#dimensionToggle button').forEach(b => b.classList.remove('active'));
+  document.getElementById(dim === 'meal' ? 'dimMeal' : 'dimNutrient').classList.add('active');
+  renderChart();
+}
+
+// 日視圖下每個餐次只有一筆、與下方「餐次明細」表格資訊重複，故隱藏此切換；
+// 餐次維度僅在週/月視圖有意義。
+function updateDimensionToggleVisibility() {
+  const toggle = document.getElementById('dimensionToggle');
+  if (toggle) toggle.style.display = state.view === 'day' ? 'none' : 'flex';
+}
+
 // ==================== Settings ====================
 function inputId(prefix, key) {
   return prefix + key.charAt(0).toUpperCase() + key.slice(1);
@@ -873,6 +955,7 @@ function updateAll() {
   if (state.dates.length === 0) {
     document.getElementById('emptyState').style.display = 'block';
     document.getElementById('mainChart').style.display = 'none';
+    document.getElementById('dimensionToggle').style.display = 'none';
     document.getElementById('summaryCards').innerHTML = '';
     document.getElementById('foodBody').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#98a2b3;padding:16px">請先載入資料</td></tr>';
     document.getElementById('dateLabel').textContent = '--';
@@ -974,9 +1057,11 @@ function renderSummary() {
 function renderChart() {
   if (state.chart) { state.chart.destroy(); state.chart = null; }
   const ctx = document.getElementById('mainChart').getContext('2d');
+  updateDimensionToggleVisibility();
 
-  if (state.view === 'day') renderDayChart(ctx);
-  else if (state.view === 'week') renderWeekChart(ctx);
+  if (state.view === 'day') { renderDayChart(ctx); return; }
+  if (state.dimension === 'meal') { renderMealChart(ctx); return; }
+  if (state.view === 'week') renderWeekChart(ctx);
   else renderMonthChart(ctx);
 }
 
@@ -1253,6 +1338,114 @@ function renderMonthChart(ctx) {
         y: { beginAtZero: true, max: yMax, title: { display: true, text: '達成率 %', font: { size: 11 } } }
       }
     }
+  });
+}
+
+function mealBarLabelPlugin(totals) {
+  return {
+    id: 'mealBarLabels',
+    afterDatasetsDraw(chart) {
+      const datasetCount = chart.data.datasets.length;
+      if (!datasetCount) return;
+      const meta = chart.getDatasetMeta(datasetCount - 1);  // 堆疊圖最上層 dataset 的像素位置即為柱頂
+      if (!meta || !meta.data) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = '#1a1a2e';
+      meta.data.forEach((bar, i) => {
+        const v = totals[i];
+        if (!v) return;
+        ctx.fillText(String(v), bar.x, bar.y - 4);
+      });
+      ctx.restore();
+    }
+  };
+}
+
+// 餐次分布圖：堆疊長條圖，X 軸為五個固定餐次（+ 有髒值資料時才出現的「其他」桶），
+// 柱內堆疊碳水/蛋白質/脂肪的熱量貢獻（4/4/9 kcal per g），柱高即為三者加總的平均熱量。
+// 週/月視圖共用同一份資料聚合邏輯（aggregateByMeal），與既有 renderWeekChart()/
+// renderMonthChart()（達成率導向）完全獨立，不互相影響。
+function renderMealChart(ctx) {
+  let r, rangeLabel;
+  if (state.view === 'week') {
+    r = getWeekRange(state.cursor);
+    rangeLabel = `${dateStr(r.start)} ~ ${dateStr(r.end)}`;
+  } else {
+    r = getMonthRange(state.cursor);
+    rangeLabel = `${state.cursor.getFullYear()} 年 ${state.cursor.getMonth() + 1} 月`;
+  }
+
+  const dates = getSortedDatesInRange(r.start, r.end);
+  if (dates.length === 0) {
+    state.chart = new Chart(ctx, {
+      type: 'bar', data: { labels: ['無資料'], datasets: [{ label: '此區間無記錄', data: [0] }] },
+      options: { responsive: true }
+    });
+    return;
+  }
+
+  const totalDays = Math.round((r.end - r.start) / 86400000) + 1;
+  const buckets = aggregateByMeal(dates).filter(b => b.meal !== OTHER_MEAL_BUCKET || b.count > 0);
+  const hasOtherBucket = buckets.some(b => b.meal === OTHER_MEAL_BUCKET);
+
+  // 「其他」桶不做碳水/蛋白質/脂肪的顏色細分（資料本身就不可信，細分只是假精確），
+  // 改用單一中性灰色整根柱子，與其餘五個真實餐次的營養素堆疊色視覺上明確區隔。
+  const OTHER_BUCKET_COLOR = '#98a2b3';
+  const macroSeries = [
+    { key: 'carbsCal', label: '🍚 碳水', color: NUTRIENTS.find(n => n.key === 'carbs').color },
+    { key: 'proteinCal', label: '🥩 蛋白質', color: NUTRIENTS.find(n => n.key === 'protein').color },
+    { key: 'fatCal', label: '🧈 脂肪', color: NUTRIENTS.find(n => n.key === 'fat').color },
+  ];
+  const labels = buckets.map(b => b.meal);
+  const datasets = macroSeries.map(s => ({
+    label: s.label,
+    data: buckets.map(b => b.meal === OTHER_MEAL_BUCKET ? 0 : b[s.key]),
+    backgroundColor: s.color,
+    stack: 'meal',
+    borderRadius: 3,
+    maxBarThickness: 56,
+  }));
+  if (hasOtherBucket) {
+    datasets.push({
+      label: '❓ 其他（非標準餐次）',
+      data: buckets.map(b => b.meal === OTHER_MEAL_BUCKET ? b.total : 0),
+      backgroundColor: OTHER_BUCKET_COLOR,
+      stack: 'meal',
+      borderRadius: 3,
+      maxBarThickness: 56,
+    });
+  }
+  const totals = buckets.map(b => b.total);
+
+  state.chart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        title: {
+          display: true,
+          text: `📊 ${rangeLabel} 餐次熱量分布（記錄 ${dates.length}/${totalDays} 天）`,
+          font: { size: 13 },
+        },
+        legend: { position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            footer: items => items.length ? `平均熱量 ${totals[items[0].dataIndex]} kcal` : '',
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, beginAtZero: true, title: { display: true, text: '熱量貢獻 kcal', font: { size: 11 } } }
+      }
+    },
+    plugins: [mealBarLabelPlugin(totals)]
   });
 }
 
